@@ -573,7 +573,8 @@
       const thread = state.threads.find((candidate) => candidate.id === threadId);
       if (!thread) return;
       const assistantMessage = { kind: 'assistant', content: textValue(response), label: assistant?.name || 'Forge Local' };
-      if (Number.isInteger(replaceMessageIndex) && replaceMessageIndex >= 0 && replaceMessageIndex < thread.messages.length) {
+      if (Number.isInteger(replaceMessageIndex)) {
+        if (replaceMessageIndex < 0 || replaceMessageIndex >= thread.messages.length || thread.messages[replaceMessageIndex]?.kind !== 'assistant') return;
         thread.messages[replaceMessageIndex] = assistantMessage;
         persist();
         renderThread(thread);
@@ -1008,9 +1009,8 @@
         return;
       }
       const prompt = thread.messages[userIndex].content;
-      thread.messages.splice(index, 1);
-      persist();
-      renderThread(thread);
+      const domMessage = conversation.querySelector('.message[data-index="' + index + '"]');
+      if (domMessage) domMessage.remove();
       simulateResponse(prompt, userIndex, index);
     } else if (button.dataset.messageAction === 'continue') {
       promptBox.value = 'Continue from this point: ';
