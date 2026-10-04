@@ -11,6 +11,15 @@ The prototype is now functional in-browser:
 - Canvas opens an editable work surface with local save and quick editing tools.
 - Composer interactions, model switching, keyboard shortcuts, context drawer, and simulated responses work without a server.
 
+The latest prototype pass also adds:
+
+- Copy, edit, regenerate, continue, and delete message actions.
+- Markdown/code rendering with lightweight syntax highlighting and code copy.
+- File/image attachment chips per conversation.
+- Search filtering and windowed rendering for long conversations.
+- Side-by-side Canvas context, version restore, Markdown/PDF/code export.
+- Local project creation, rename/delete/switch, files, folders, instructions, memory toggle, and project-file attachment.
+
 ## Run locally
 
 ```bash
