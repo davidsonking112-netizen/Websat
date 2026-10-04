@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Forge — local intelligence workspace</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-row">
+          <div class="forge-mark"><span></span><span></span><span></span></div>
+          <span class="brand-name">Forge</span>
+          <span class="brand-badge">LOCAL</span>
+        </div>
+
+        <button class="new-chat" id="newChat"><span class="plus">+</span> New thread <kbd>⌘ K</kbd></button>
+
+        <div class="side-section">
+          <p class="section-label">Workspace</p>
+          <button class="nav-item active"><span class="nav-icon">◈</span> Chat <span class="nav-count">1</span></button>
+          <button class="nav-item"><span class="nav-icon">✦</span> Assistants</button>
+          <button class="nav-item"><span class="nav-icon">▣</span> Library</button>
+        </div>
+
+        <div class="side-section recent-section">
+          <p class="section-label">Recent threads</p>
+          <button class="thread-item selected"><span class="thread-dot"></span> Untitled conversation</button>
+          <button class="thread-item"><span class="thread-dot dim"></span> Product notes</button>
+          <button class="thread-item"><span class="thread-dot dim"></span> Research sprint</button>
+        </div>
+
+        <div class="sidebar-bottom">
+          <div class="usage-card"><div class="usage-top"><span>Local storage</span><span>18%</span></div><div class="usage-bar"><i></i></div><small>Models stay on this device.</small></div>
+          <button class="account"><span class="avatar">DK</span><span><strong>Davidson</strong><small>Personal workspace</small></span><span class="more">•••</span></button>
+        </div>
+      </aside>
+
+      <main class="main-panel">
+        <header class="topbar">
+          <div class="breadcrumbs"><span>Chat</span><span class="crumb-separator">/</span><strong>Untitled conversation</strong></div>
+          <div class="top-actions"><button class="icon-button" aria-label="Search">⌕</button><button class="icon-button" aria-label="Settings">⚙</button><button class="share-button">Share <span>↗</span></button></div>
+        </header>
+
+        <section class="chat-stage">
+          <div class="welcome-block">
+            <div class="orbital-mark"><div class="orb-core"></div><div class="orb-ring ring-one"></div><div class="orb-ring ring-two"></div></div>
+            <p class="eyebrow">YOUR PRIVATE AI WORKSPACE</p>
+            <h1>What will you <em>forge</em> today?</h1>
+            <p class="subcopy">A calm, capable space for thinking, making, and getting things done.</p>
+          </div>
+
+          <div class="starter-grid">
+            <button class="starter-card"><span class="card-icon violet">✧</span><span><strong>Explore an idea</strong><small>Turn a spark into a clear plan</small></span><span class="arrow">↗</span></button>
+            <button class="starter-card"><span class="card-icon amber">⌘</span><span><strong>Write something</strong><small>Draft, refine, or transform text</small></span><span class="arrow">↗</span></button>
+            <button class="starter-card"><span class="card-icon blue">⌁</span><span><strong>Understand a topic</strong><small>Get a focused, useful explanation</small></span><span class="arrow">↗</span></button>
+          </div>
+
+          <div class="composer-wrap">
+            <div class="composer" id="composerBox"><textarea id="prompt" rows="1" placeholder="Message Forge..." aria-label="Message Forge"></textarea><div class="composer-toolbar"><div class="composer-tools"><button class="tool-button" title="Attach file">＋</button><button class="tool-button" title="Voice input">◉</button><span class="tool-hint">Ask anything</span></div><div class="composer-right"><button class="model-button" id="modelButton"><span class="status-dot"></span> Forge Local <span class="chevron">⌄</span></button><button class="send-button" id="sendButton" aria-label="Send">↑</button></div></div></div>
+            <p class="composer-note">Forge can make mistakes. Check important information.</p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast">New thread ready</div>
+    <div class="model-menu" id="modelMenu"><p>Choose a model</p><button class="model-option chosen"><span class="status-dot"></span><span><strong>Forge Local</strong><small>Fast · private · on device</small></span><span>✓</span></button><button class="model-option"><span class="status-dot cloud"></span><span><strong>Forge Reasoning</strong><small>Deeper thinking · local</small></span></button></div>
+    <script src="app.js"></script>
+  </body>
+</html>
