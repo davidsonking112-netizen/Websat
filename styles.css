@@ -74,3 +74,153 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .onboarding-steps span { grid-row:span 2; width:28px; height:28px; display:grid; place-items:center; border-radius:50%; background:var(--accent); color:var(--paper); font-weight:700; }
 .onboarding-steps small { color:var(--muted); }
 @media (max-width: 700px) { .permission-grid { grid-template-columns:1fr; } .setting-row { align-items:flex-start; flex-direction:column; } .onboarding-card { padding:22px; } }
+
+/* Hardened theme surfaces */
+:root[data-theme="dark"] body,
+:root[data-theme="dark"] .app-shell,
+:root[data-theme="dark"] .main-panel {
+  background: var(--paper);
+  color: var(--ink);
+}
+:root[data-theme="dark"] .sidebar,
+:root[data-theme="dark"] .topbar,
+:root[data-theme="dark"] .composer,
+:root[data-theme="dark"] .context-drawer,
+:root[data-theme="dark"] .workspace-modal,
+:root[data-theme="dark"] .model-menu,
+:root[data-theme="dark"] .palette-box {
+  background: var(--panel);
+  color: var(--ink);
+  border-color: var(--line);
+}
+:root[data-theme="dark"] .thread-item,
+:root[data-theme="dark"] .nav-item,
+:root[data-theme="dark"] .starter-card,
+:root[data-theme="dark"] .project-card,
+:root[data-theme="dark"] .assistant-card,
+:root[data-theme="dark"] .context-file,
+:root[data-theme="dark"] .usage-card,
+:root[data-theme="dark"] .account,
+:root[data-theme="dark"] .workspace-switcher,
+:root[data-theme="dark"] .message-actions button,
+:root[data-theme="dark"] .model-option,
+:root[data-theme="dark"] .palette-group button,
+:root[data-theme="dark"] .overlay-list-item,
+:root[data-theme="dark"] .tool-connection {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--line);
+}
+:root[data-theme="dark"] .starter-card:hover,
+:root[data-theme="dark"] .thread-item:hover,
+:root[data-theme="dark"] .nav-item:hover,
+:root[data-theme="dark"] .model-option:hover,
+:root[data-theme="dark"] .palette-group button:hover,
+:root[data-theme="dark"] .overlay-list-item:hover {
+  background: var(--card);
+}
+:root[data-theme="dark"] .message-body,
+:root[data-theme="dark"] .message-label,
+:root[data-theme="dark"] .breadcrumbs,
+:root[data-theme="dark"] .drawer-header h2,
+:root[data-theme="dark"] .workspace-modal h2,
+:root[data-theme="dark"] .workspace-modal h3,
+:root[data-theme="dark"] .project-file,
+:root[data-theme="dark"] .project-detail-grid h3,
+:root[data-theme="dark"] .setting-row,
+:root[data-theme="dark"] .assistant-editor label,
+:root[data-theme="dark"] .assistant-toolbar,
+:root[data-theme="dark"] .tool-connection strong {
+  color: var(--ink);
+}
+:root[data-theme="dark"] .subcopy,
+:root[data-theme="dark"] .section-label,
+:root[data-theme="dark"] .drawer-kicker,
+:root[data-theme="dark"] .drawer-section-heading,
+:root[data-theme="dark"] .tool-hint,
+:root[data-theme="dark"] .composer-note,
+:root[data-theme="dark"] .settings-copy,
+:root[data-theme="dark"] .setting-row small,
+:root[data-theme="dark"] .assistant-editor small,
+:root[data-theme="dark"] .tool-connection small,
+:root[data-theme="dark"] .palette-footer,
+:root[data-theme="dark"] .empty-overlay,
+:root[data-theme="dark"] .history-window-note {
+  color: var(--muted);
+}
+:root[data-theme="dark"] .composer textarea,
+:root[data-theme="dark"] .assistant-editor input,
+:root[data-theme="dark"] .assistant-editor textarea,
+:root[data-theme="dark"] .project-instructions,
+:root[data-theme="dark"] .setting-row select {
+  background: var(--paper);
+  color: var(--ink);
+  border-color: var(--line);
+}
+:root[data-theme="dark"] .inline-code {
+  background: #2b2931;
+  color: #eee8f5;
+}
+:root[data-theme="dark"] .mini-message,
+:root[data-theme="dark"] .canvas-context-note,
+:root[data-theme="dark"] .permission-grid label {
+  background: var(--card);
+  color: var(--ink);
+  border-color: var(--line);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] body,
+  :root[data-theme="system"] .app-shell,
+  :root[data-theme="system"] .main-panel {
+    background: var(--paper);
+    color: var(--ink);
+  }
+  :root[data-theme="system"] .sidebar,
+  :root[data-theme="system"] .topbar,
+  :root[data-theme="system"] .composer,
+  :root[data-theme="system"] .context-drawer,
+  :root[data-theme="system"] .workspace-modal,
+  :root[data-theme="system"] .model-menu,
+  :root[data-theme="system"] .palette-box {
+    background: var(--panel);
+    color: var(--ink);
+    border-color: var(--line);
+  }
+  :root[data-theme="system"] .thread-item,
+  :root[data-theme="system"] .nav-item,
+  :root[data-theme="system"] .starter-card,
+  :root[data-theme="system"] .project-card,
+  :root[data-theme="system"] .assistant-card,
+  :root[data-theme="system"] .context-file,
+  :root[data-theme="system"] .usage-card,
+  :root[data-theme="system"] .account,
+  :root[data-theme="system"] .workspace-switcher,
+  :root[data-theme="system"] .model-option,
+  :root[data-theme="system"] .palette-group button,
+  :root[data-theme="system"] .overlay-list-item,
+  :root[data-theme="system"] .tool-connection {
+    background: transparent;
+    color: var(--ink);
+    border-color: var(--line);
+  }
+  :root[data-theme="system"] .message-body,
+  :root[data-theme="system"] .message-label,
+  :root[data-theme="system"] .breadcrumbs,
+  :root[data-theme="system"] .drawer-header h2,
+  :root[data-theme="system"] .workspace-modal h2,
+  :root[data-theme="system"] .workspace-modal h3,
+  :root[data-theme="system"] .project-file,
+  :root[data-theme="system"] .setting-row,
+  :root[data-theme="system"] .assistant-editor label {
+    color: var(--ink);
+  }
+  :root[data-theme="system"] .composer textarea,
+  :root[data-theme="system"] .assistant-editor input,
+  :root[data-theme="system"] .assistant-editor textarea,
+  :root[data-theme="system"] .project-instructions,
+  :root[data-theme="system"] .setting-row select {
+    background: var(--paper);
+    color: var(--ink);
+    border-color: var(--line);
+  }
+}
