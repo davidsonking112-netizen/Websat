@@ -39,4 +39,25 @@ describe('Websat production smoke checks', () => {
     expect(js).toContain('enabled: false');
     expect(js).toContain('requiresConfirmation: true');
   });
+
+  test('thread history is not silently truncated and regeneration preserves position', () => {
+    const js = read('app.js');
+    expect(js).toContain('thread.messages.forEach((message, index)');
+    expect(js).toContain('state.threads.forEach((thread, index)');
+    expect(js).not.toContain('thread.messages.length - 36');
+    expect(js).not.toContain('state.threads = state.threads.slice(0, 100)');
+    expect(js).toContain('simulateResponse(prompt, userIndex, index)');
+    expect(js).toContain('thread.messages[replaceMessageIndex] = assistantMessage');
+  });
+
+  test('renderer and desktop security controls are present', () => {
+    const html = read('index.html');
+    const electron = read('electron/main.cjs');
+    expect(html).toContain('Content-Security-Policy');
+    expect(html).toContain("script-src 'self'");
+    expect(electron).toContain('contextIsolation: true');
+    expect(electron).toContain('nodeIntegration: false');
+    expect(electron).toContain('sandbox: true');
+    expect(electron).toContain("url === 'about:blank'");
+  });
 });
