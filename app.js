@@ -313,7 +313,9 @@
   }
 
   function toggleContext(force) {
-    contextDrawer.classList.toggle('open', force ?? !contextDrawer.classList.contains('open'));
+    const open = force ?? !contextDrawer.classList.contains('open');
+    contextDrawer.classList.toggle('open', open);
+    byId('contextToggle')?.setAttribute('aria-expanded', String(open));
   }
 
   function escapeHtml(value) {
@@ -1020,7 +1022,9 @@
 
   modelButton.addEventListener('click', (event) => {
     event.stopPropagation();
-    modelMenu.classList.toggle('open');
+    const open = !modelMenu.classList.contains('open');
+    modelMenu.classList.toggle('open', open);
+    modelButton.setAttribute('aria-expanded', String(open));
   });
 
   $$('.model-option').forEach((option) => option.addEventListener('click', () => {
@@ -1029,6 +1033,7 @@
     state.selectedModel = name;
     updateModelButton();
     modelMenu.classList.remove('open');
+    modelButton.setAttribute('aria-expanded', 'false');
     persist();
     showToast(name + ' selected');
   }));
@@ -1057,7 +1062,10 @@
   paletteInput.addEventListener('input', () => renderThreadList(paletteInput.value));
 
   document.addEventListener('click', (event) => {
-    if (!event.target.closest('#modelButton') && !event.target.closest('#modelMenu')) modelMenu.classList.remove('open');
+    if (!event.target.closest('#modelButton') && !event.target.closest('#modelMenu')) {
+      modelMenu.classList.remove('open');
+      modelButton.setAttribute('aria-expanded', 'false');
+    }
   });
 
   document.addEventListener('keydown', (event) => {
@@ -1077,6 +1085,7 @@
       closePalette();
       closeOverlay();
       modelMenu.classList.remove('open');
+      modelButton.setAttribute('aria-expanded', 'false');
       toggleContext(false);
     }
   });
