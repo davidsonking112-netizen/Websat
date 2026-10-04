@@ -1,6 +1,8 @@
 # Websat
 
-A lightweight UI-only recreation inspired by the Jan open-source AI workspace, rebranded as **Forge**.
+A lightweight UI-only recreation inspired by ChatGPT Canvas and the Jan open-source AI workspace, rebranded as **Forge**.
+
+The current UX pass is workspace-first: Projects, Assistants, Model Hub, local thread context, a command palette, Canvas mode, and simulated local responses are represented without backend or model calls.
 
 ## Run locally
 
