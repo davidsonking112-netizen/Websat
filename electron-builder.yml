@@ -1,0 +1,12 @@
+appId: com.websat.forge
+productName: Websat
+directories:
+  output: release
+files:
+  - dist/**
+  - electron/**
+  - package.json
+win:
+  target:
+    - nsis
+  artifactName: Websat-${version}-Windows-${arch}.${ext}
