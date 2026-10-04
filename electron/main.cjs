@@ -23,9 +23,10 @@ function createWindow() {
   }
 
   win.webContents.on('will-navigate', (event, navigationUrl) => {
+    const packagedUrl = pathToFileURL(path.join(__dirname, '..', 'dist', 'index.html')).toString();
     const allowed = process.env.WEBSAT_DEV === '1'
       ? navigationUrl === 'http://localhost:5173/'
-      : navigationUrl.startsWith('file://');
+      : navigationUrl === packagedUrl;
     if (!allowed) event.preventDefault();
   });
 
@@ -45,7 +46,7 @@ function createWindow() {
 
     try {
       const parsed = new URL(url);
-      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+      if (parsed.protocol === 'https:') {
         setImmediate(() => shell.openExternal(parsed.toString()));
       }
     } catch (_) {}
