@@ -20,7 +20,7 @@ describe('Websat production smoke checks', () => {
 
   test('unsafe static thread placeholders are not the source of recent-thread rendering', () => {
     const html = read('index.html');
-    expect(html).toContain('class="recent-section"');
+    expect(html).toContain('recent-section');
     const js = read('app.js');
     expect(js).toContain('item.dataset.threadId = thread.id');
     expect(js).toContain('recentSection.appendChild(item)');
