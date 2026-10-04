@@ -59,5 +59,6 @@ describe('Websat production smoke checks', () => {
     expect(electron).toContain('nodeIntegration: false');
     expect(electron).toContain('sandbox: true');
     expect(electron).toContain("url === 'about:blank'");
+    expect(electron).toContain("parsed.protocol === 'https:'");
   });
 });
