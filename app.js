@@ -139,24 +139,31 @@
       canvas: textValue(raw.canvas, defaultCanvas),
       canvasHistory: history,
       projects,
-      selectedModel: textValue(raw.selectedModel, 'Forge Local'),
-      selectedAssistant: textValue(raw.selectedAssistant, 'Forge Local'),
-      assistants: Array.isArray(raw.assistants) ? raw.assistants.map((a) => ({
-        id: textValue(a?.id, makeId('assistant')),
-        name: textValue(a?.name, 'Custom assistant').slice(0, 80),
-        description: textValue(a?.description, 'Custom local assistant').slice(0, 200),
-        instructions: textValue(a?.instructions).slice(0, 12000),
-        tools: Array.isArray(a?.tools) ? a.tools.map((x) => textValue(x).slice(0, 80)).filter(Boolean) : [],
-        permissions: a?.permissions && typeof a.permissions === 'object' ? a.permissions : {}
-      })).filter((a) => a.name) : base.assistants,
+      selectedModel: ['Forge Local', 'Forge Reasoning'].includes(raw.selectedModel) ? raw.selectedModel : 'Forge Local',
+      selectedAssistant: textValue(raw.selectedAssistant, 'forge-local'),
+      assistants: (() => {
+        const assistants = Array.isArray(raw.assistants) ? raw.assistants.map((a) => ({
+          id: textValue(a?.id, makeId('assistant')).slice(0, 100),
+          name: textValue(a?.name, 'Custom assistant').trim().slice(0, 80),
+          description: textValue(a?.description, 'Custom local assistant').slice(0, 200),
+          instructions: textValue(a?.instructions).slice(0, 12000),
+          tools: Array.isArray(a?.tools) ? a.tools.map((x) => textValue(x).trim().slice(0, 80)).filter(Boolean) : [],
+          permissions: {
+            read: Boolean(a?.permissions?.read),
+            write: Boolean(a?.permissions?.write),
+            network: Boolean(a?.permissions?.network)
+          }
+        })).filter((a) => a.id && a.name) : [];
+        return assistants.length ? assistants : base.assistants;
+      })(),
       toolConnections: Array.isArray(raw.toolConnections) ? raw.toolConnections.map((t) => ({
-        id: textValue(t?.id, makeId('tool')),
-        name: textValue(t?.name, 'Local tool').slice(0, 100),
+        id: textValue(t?.id, makeId('tool')).slice(0, 100),
+        name: textValue(t?.name, 'Local tool').trim().slice(0, 100),
         type: textValue(t?.type, 'MCP').slice(0, 40),
-        endpoint: textValue(t?.endpoint).slice(0, 500),
+        endpoint: textValue(t?.endpoint).trim().slice(0, 500),
         enabled: Boolean(t?.enabled),
         requiresConfirmation: t?.requiresConfirmation !== false
-      })) : [],
+      })).filter((t) => t.name && t.endpoint) : [],
       settings: {
         theme: ['system', 'light', 'dark'].includes(raw.settings?.theme) ? raw.settings.theme : 'system',
         onboardingComplete: Boolean(raw.settings?.onboardingComplete),
@@ -173,7 +180,7 @@
         return normalizeState(JSON.parse(raw));
       } catch (error) {
         try {
-          localStorage.setItem(storeKey + '-corrupt-' + Date.now(), raw.slice(0, 200000));
+          localStorage.setItem(storeKey + '-recovery', raw.slice(0, 200000));
         } catch (_) {}
         showToast('Saved state was damaged; a clean workspace was restored');
         return defaultState();
@@ -191,7 +198,8 @@
   function persist() {
     try {
       state.version = stateVersion;
-      localStorage.setItem(storeKey, JSON.stringify(state));
+      const serialized = JSON.stringify(state);
+      localStorage.setItem(storeKey, serialized);
       renderThreadList();
       updateStorageIndicator();
       return true;
@@ -202,7 +210,8 @@
   }
 
   function selectedAssistant() {
-    return state.assistants.find((assistant) => assistant.id === state.selectedAssistant || assistant.name === state.selectedAssistant) || state.assistants[0];
+    const assistant = state.assistants.find((item) => item.id === state.selectedAssistant || item.name === state.selectedAssistant);
+    return assistant || state.assistants[0] || null;
   }
 
   function applyTheme() {
@@ -416,7 +425,7 @@
     $$('.thread-item[data-thread-id]', recentSection).forEach((item) => item.remove());
 
     const normalizedQuery = String(query || '').trim().toLowerCase();
-    state.threads.slice(0, 100).forEach((thread, index) => {
+    state.threads.forEach((thread, index) => {
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'thread-item' + (thread.id === state.activeId ? ' selected' : '');
@@ -482,19 +491,11 @@
     updateContextDrawer();
     conversation.replaceChildren();
 
-    const start = Math.max(0, thread.messages.length - 36);
-    if (start > 0) {
-      const notice = document.createElement('div');
-      notice.className = 'history-window-note';
-      notice.textContent = 'Showing the latest 36 of ' + thread.messages.length + ' messages.';
-      conversation.appendChild(notice);
-    }
-
     if (thread.messages.length) {
       chatStage.classList.add('has-messages');
       starterGrid.setAttribute('aria-hidden', 'true');
-      thread.messages.slice(start).forEach((message, offset) => {
-        addMessage(message.kind, message.content, message.label, false, start + offset);
+      thread.messages.forEach((message, index) => {
+        addMessage(message.kind, message.content, message.label, false, index);
       });
     } else {
       chatStage.classList.remove('has-messages');
@@ -532,8 +533,12 @@
     overlay.setAttribute('aria-hidden', 'true');
   }
 
-  function simulateResponse(input, sourceMessageIndex = null) {
+  let responseRequestId = 0;
+
+  function simulateResponse(input, sourceMessageIndex = null, replaceMessageIndex = null) {
     clearTimeout(responseTimer);
+    const requestId = ++responseRequestId;
+    const threadId = state.activeId;
     const typing = document.createElement('div');
     typing.className = 'message assistant';
     typing.innerHTML = '<div class="message-avatar forge">✦</div><div class="message-column"><div class="message-body"><div class="message-label">' + escapeHtml(state.selectedAssistant) + '</div><span class="typing-dots"><i></i><i></i><i></i></span></div></div>';
@@ -541,7 +546,7 @@
     conversation.scrollTop = conversation.scrollHeight;
 
     responseTimer = setTimeout(() => {
-      if (!typing.isConnected) return;
+      if (!typing.isConnected || requestId !== responseRequestId || state.activeId !== threadId) return;
       typing.remove();
       const text = textValue(input);
       const lower = text.toLowerCase();
@@ -563,7 +568,16 @@
         response = 'I’m ready to work through that with you. This local preview simulates the complete flow before you connect a model.';
       }
 
-      addMessage('assistant', response, assistant?.name || state.selectedAssistant);
+      const thread = state.threads.find((candidate) => candidate.id === threadId);
+      if (!thread) return;
+      const assistantMessage = { kind: 'assistant', content: textValue(response), label: assistant?.name || 'Forge Local' };
+      if (Number.isInteger(replaceMessageIndex) && replaceMessageIndex >= 0 && replaceMessageIndex < thread.messages.length) {
+        thread.messages[replaceMessageIndex] = assistantMessage;
+        persist();
+        renderThread(thread);
+      } else {
+        addMessage('assistant', assistantMessage.content, assistantMessage.label);
+      }
     }, 650);
   }
 
@@ -882,7 +896,6 @@
   function newThread() {
     const thread = { id: makeId('thread'), title: 'Untitled conversation', messages: [], attachments: [] };
     state.threads.unshift(thread);
-    state.threads = state.threads.slice(0, 100);
     editingIndex = null;
     clearTimeout(responseTimer);
     renderThread(thread);
@@ -996,7 +1009,7 @@
       thread.messages.splice(index, 1);
       persist();
       renderThread(thread);
-      simulateResponse(prompt, userIndex);
+      simulateResponse(prompt, userIndex, index);
     } else if (button.dataset.messageAction === 'continue') {
       promptBox.value = 'Continue from this point: ';
       promptBox.focus();
@@ -1083,10 +1096,21 @@
     if (event.key !== storeKey || suppressStorageEvent || !event.newValue) return;
     try {
       const incoming = normalizeState(JSON.parse(event.newValue));
+      if (editingIndex !== null || promptBox.value.trim()) {
+        showToast('Another tab changed the workspace; your current draft was kept');
+        return;
+      }
+      clearTimeout(responseTimer);
+      responseRequestId += 1;
       state = incoming;
+      editingIndex = null;
+      applyTheme();
       renderThread(currentThread());
       updateModelButton();
-    } catch (_) {}
+      showToast('Workspace refreshed from another tab');
+    } catch (_) {
+      showToast('Could not read an update from another tab');
+    }
   });
 
   window.addEventListener('error', (event) => {
