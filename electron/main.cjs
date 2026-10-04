@@ -2,6 +2,8 @@ const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
 const { pathToFileURL } = require('url');
 
+app.enableSandbox();
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1440,
