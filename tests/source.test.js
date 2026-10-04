@@ -22,6 +22,7 @@ describe('Websat production smoke checks', () => {
     const html = read('index.html');
     expect(html).toContain('class="recent-section"');
     const js = read('app.js');
+    expect(js).toContain('item.dataset.threadId = thread.id');
     expect(js).toContain('recentSection.appendChild(item)');
     expect(js).toContain('title.textContent = thread.title');
   });
