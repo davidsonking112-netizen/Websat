@@ -631,7 +631,7 @@
 
   function exportCanvasFile(content, format) {
     if (format === 'pdf') {
-      const win = window.open('', '_blank', 'noopener,noreferrer');
+      const win = window.open('', '_blank');
       if (!win) {
         showToast('Allow pop-ups to export PDF');
         return;
