@@ -50,4 +50,4 @@ Tool connections are stored locally, disabled by default, and marked confirmatio
 
 ### Architecture note
 
-The current UI remains a carefully preserved vanilla runtime while the Vite build/test boundary is introduced. A full React component migration is intentionally **not** performed in this release because replacing the working DOM architecture in one pass would create unnecessary regression risk. React's current client model expects the framework to own a root and its component tree, so the migration should be a dedicated, tested phase rather than an unused dependency added for appearance. citeturn2search0turn2search1
+The current UI remains a carefully preserved vanilla runtime while the Vite build/test boundary is introduced. A full React component migration is intentionally **not** performed in this release because replacing the working DOM architecture in one pass would create unnecessary regression risk. React's current client model expects the framework to own a root and its component tree, so the migration should be a dedicated, tested phase rather than an unused dependency added for appearance.
