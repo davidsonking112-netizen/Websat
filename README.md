@@ -27,7 +27,7 @@ This is still a front-end prototype: it has no real model provider, authenticati
 
 ## Validation
 
-The production branch remains unchanged while fixes are developed on the `fix/websat-stability-security` branch. The repaired `app.js` passes JavaScript syntax validation after the changes.
+This release hardens the local runtime, message history rendering, regeneration behavior, cross-tab recovery, Electron navigation, CSP, and accessibility semantics. Validation is performed by the repository's automated test and build workflows.
 
 
 ## Production foundation
