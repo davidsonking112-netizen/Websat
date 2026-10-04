@@ -468,6 +468,11 @@
     if (heading) heading.textContent = thread.title;
     const count = $('.project-card small', contextDrawer);
     if (count) count.textContent = thread.attachments.length + ' attached files · Local workspace';
+    const assistant = selectedAssistant();
+    const assistantName = $('.assistant-card strong', contextDrawer);
+    const assistantDescription = $('.assistant-card small', contextDrawer);
+    if (assistantName) assistantName.textContent = assistant?.name || 'Forge Local';
+    if (assistantDescription) assistantDescription.textContent = assistant?.description || 'Clear, careful, action-oriented';
   }
 
   function renderThread(thread) {
