@@ -1,24 +1,19 @@
 # Websat
 
-A lightweight UI-only recreation inspired by ChatGPT Canvas and the Jan open-source AI workspace, rebranded as **Forge**.
+A lightweight UI-first recreation inspired by ChatGPT Canvas and the Jan open-source AI workspace, rebranded as **Forge**.
 
-The current UX pass is workspace-first: Projects, Assistants, Model Hub, local thread context, a command palette, Canvas mode, and simulated local responses are represented without backend or model calls.
+The current UX pass is workspace-first: Projects, Assistants, Model Hub, local thread context, a command palette, Canvas mode, and simulated local responses are represented without a backend or model calls.
 
-The prototype is now functional in-browser:
+The prototype is functional in-browser:
 
-- Threads persist to `localStorage` and can be created, switched, and restored.
+- Threads persist locally in the browser via `localStorage` and can be created, switched, searched, edited, regenerated, continued, and restored.
+- Local state is validated on load and guarded against malformed or unavailable browser storage.
 - Projects, Assistants, and Model Hub open real workspace views.
-- Canvas opens an editable work surface with local save and quick editing tools.
+- Canvas opens an editable work surface with local save, version history, restore, and export tools.
 - Composer interactions, model switching, keyboard shortcuts, context drawer, and simulated responses work without a server.
-
-The latest prototype pass also adds:
-
-- Copy, edit, regenerate, continue, and delete message actions.
-- Markdown/code rendering with lightweight syntax highlighting and code copy.
-- File/image attachment chips per conversation.
-- Search filtering and windowed rendering for long conversations.
-- Side-by-side Canvas context, version restore, Markdown/PDF/code export.
-- Local project creation, rename/delete/switch, files, folders, instructions, memory toggle, and project-file attachment.
+- Message and file names are rendered with safe DOM/text handling.
+- Long conversations use a bounded render window while keeping the full local message history.
+- Multiple tabs can refresh from local-storage changes.
 
 ## Run locally
 
@@ -28,4 +23,8 @@ python3 -m http.server 4173
 
 Then open <http://localhost:4173>.
 
-This is a front-end mockup only: it has no model provider, authentication, persistence, or backend connection.
+This is still a front-end prototype: it has no real model provider, authentication, server-side database, or remote synchronization. File attachments currently store local metadata only; their contents are not uploaded or parsed.
+
+## Validation
+
+The production branch remains unchanged while fixes are developed on the `fix/websat-stability-security` branch. The repaired `app.js` passes JavaScript syntax validation after the changes.
