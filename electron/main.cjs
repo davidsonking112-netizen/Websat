@@ -22,8 +22,34 @@ function createWindow() {
     win.loadURL(pathToFileURL(path.join(__dirname, '..', 'dist', 'index.html')).toString());
   }
 
+  win.webContents.on('will-navigate', (event, navigationUrl) => {
+    const allowed = process.env.WEBSAT_DEV === '1'
+      ? navigationUrl === 'http://localhost:5173/'
+      : navigationUrl.startsWith('file://');
+    if (!allowed) event.preventDefault();
+  });
+
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (url === 'about:blank') {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          webPreferences: {
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true
+          }
+        }
+      };
+    }
+
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+        setImmediate(() => shell.openExternal(parsed.toString()));
+      }
+    } catch (_) {}
+
     return { action: 'deny' };
   });
 }
