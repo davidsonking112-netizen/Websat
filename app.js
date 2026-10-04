@@ -56,7 +56,14 @@
     canvasHistory: [],
     projects: [defaultProject()],
     selectedModel: 'Forge Local',
-    selectedAssistant: 'Forge Local'
+    selectedAssistant: 'Forge Local',
+    assistants: [
+      { id: 'forge-local', name: 'Forge Local', description: 'Clear, careful, action-oriented', instructions: 'Be clear, careful, concise, and action-oriented.', tools: [], permissions: {} },
+      { id: 'forge-writer', name: 'Forge Writer', description: 'Sharp edits, strong voice, clean structure', instructions: 'Write with clarity, strong structure, and an appropriate voice.', tools: [], permissions: {} },
+      { id: 'forge-analyst', name: 'Forge Analyst', description: 'Finds patterns and makes decisions legible', instructions: 'Analyze carefully, expose assumptions, and make decisions legible.', tools: [], permissions: {} }
+    ],
+    toolConnections: [],
+    settings: { theme: 'system', onboardingComplete: false, reduceMotion: false }
   });
 
   const textValue = (value, fallback = '') => typeof value === 'string' ? value : fallback;
@@ -133,7 +140,28 @@
       canvasHistory: history,
       projects,
       selectedModel: textValue(raw.selectedModel, 'Forge Local'),
-      selectedAssistant: textValue(raw.selectedAssistant, 'Forge Local')
+      selectedAssistant: textValue(raw.selectedAssistant, 'Forge Local'),
+      assistants: Array.isArray(raw.assistants) ? raw.assistants.map((a) => ({
+        id: textValue(a?.id, makeId('assistant')),
+        name: textValue(a?.name, 'Custom assistant').slice(0, 80),
+        description: textValue(a?.description, 'Custom local assistant').slice(0, 200),
+        instructions: textValue(a?.instructions).slice(0, 12000),
+        tools: Array.isArray(a?.tools) ? a.tools.map((x) => textValue(x).slice(0, 80)).filter(Boolean) : [],
+        permissions: a?.permissions && typeof a.permissions === 'object' ? a.permissions : {}
+      })).filter((a) => a.name) : base.assistants,
+      toolConnections: Array.isArray(raw.toolConnections) ? raw.toolConnections.map((t) => ({
+        id: textValue(t?.id, makeId('tool')),
+        name: textValue(t?.name, 'Local tool').slice(0, 100),
+        type: textValue(t?.type, 'MCP').slice(0, 40),
+        endpoint: textValue(t?.endpoint).slice(0, 500),
+        enabled: Boolean(t?.enabled),
+        requiresConfirmation: t?.requiresConfirmation !== false
+      })) : [],
+      settings: {
+        theme: ['system', 'light', 'dark'].includes(raw.settings?.theme) ? raw.settings.theme : 'system',
+        onboardingComplete: Boolean(raw.settings?.onboardingComplete),
+        reduceMotion: Boolean(raw.settings?.reduceMotion)
+      }
     };
   }
 
@@ -171,6 +199,94 @@
       showToast('Could not save locally; storage may be full or blocked');
       return false;
     }
+  }
+
+  function selectedAssistant() {
+    return state.assistants.find((assistant) => assistant.id === state.selectedAssistant || assistant.name === state.selectedAssistant) || state.assistants[0];
+  }
+
+  function applyTheme() {
+    const theme = state.settings?.theme || 'system';
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.classList.toggle('reduce-motion', Boolean(state.settings?.reduceMotion));
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', theme === 'dark' ? '#17161b' : '#f7f4ee');
+  }
+
+  function renderSettings() {
+    openOverlay('Settings', 'WORKSPACE',
+      '<div class="settings-panel"><section><h3>Appearance</h3><label class="setting-row"><span><strong>Theme</strong><small>Choose light, dark, or follow your device.</small></span><select id="themeSelect"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><label class="setting-row"><span><strong>Reduce motion</strong><small>Prefer less animation and transition.</small></span><input id="reduceMotion" type="checkbox" /></label></section><section><h3>Safety</h3><p class="settings-copy">Tool actions are disabled by default. Connections require explicit enablement and can require confirmation before execution.</p></section><button class="canvas-save" id="saveSettings" type="button">Save settings</button></div>'
+    );
+    byId('themeSelect').value = state.settings.theme;
+    byId('reduceMotion').checked = state.settings.reduceMotion;
+    byId('saveSettings').addEventListener('click', () => {
+      state.settings.theme = byId('themeSelect').value;
+      state.settings.reduceMotion = byId('reduceMotion').checked;
+      applyTheme();
+      persist();
+      closeOverlay();
+      showToast('Settings saved locally');
+    });
+  }
+
+  function renderAssistants() {
+    const assistants = state.assistants;
+    openOverlay('Assistants & tools', 'WORKSPACE',
+      '<div class="assistant-toolbar"><span>' + assistants.length + ' assistants</span><button class="overlay-action" id="createAssistant">+ New assistant</button></div>' +
+      '<div class="overlay-list">' + assistants.map((assistant) =>
+        '<button class="overlay-list-item" data-assistant-id="' + escapeAttribute(assistant.id) + '" type="button"><span class="assistant-avatar">✦</span><span><strong>' + escapeHtml(assistant.name) + '</strong><small>' + escapeHtml(assistant.description) + '</small></span><span class="overlay-action">' + (selectedAssistant()?.id === assistant.id ? 'Active' : 'Use') + '</span></button>'
+      ).join('') + '</div>' +
+      '<div class="tool-connections"><div class="assistant-toolbar"><strong>Tool / MCP connections</strong><button class="overlay-action" id="addToolConnection">+ Add</button></div>' +
+      (state.toolConnections.length ? state.toolConnections.map((tool) => '<div class="tool-connection"><span><strong>' + escapeHtml(tool.name) + '</strong><small>' + escapeHtml(tool.type) + ' · ' + (tool.enabled ? 'Enabled' : 'Disabled') + (tool.requiresConfirmation ? ' · confirmation required' : '') + '</small></span><button class="overlay-action" data-tool-toggle="' + escapeAttribute(tool.id) + '" type="button">' + (tool.enabled ? 'Disable' : 'Enable') + '</button></div>').join('') : '<p class="empty-overlay">No tool connections yet. Add one when you are ready to connect an MCP server.</p>') +
+      '</div>'
+    );
+    $('[data-assistant-id]').forEach((button) => button.addEventListener('click', () => editAssistant(button.dataset.assistantId)));
+    byId('createAssistant').addEventListener('click', () => editAssistant(null));
+    byId('addToolConnection').addEventListener('click', addToolConnection);
+    $('[data-tool-toggle]').forEach((button) => button.addEventListener('click', () => {
+      const tool = state.toolConnections.find((x) => x.id === button.dataset.toolToggle);
+      if (!tool) return;
+      tool.enabled = !tool.enabled;
+      persist();
+      renderAssistants();
+    }));
+  }
+
+  function editAssistant(id) {
+    const assistant = id ? state.assistants.find((x) => x.id === id) : null;
+    const draft = assistant || { id: makeId('assistant'), name: '', description: '', instructions: '', tools: [], permissions: {} };
+    openOverlay(assistant ? 'Edit assistant' : 'Create assistant', 'ASSISTANT',
+      '<div class="assistant-editor"><label>Name<input id="assistantName" maxlength="80" value="' + escapeAttribute(draft.name) + '"></label><label>Description<input id="assistantDescription" maxlength="200" value="' + escapeAttribute(draft.description) + '"></label><label>Instructions<textarea id="assistantInstructions" maxlength="12000">' + escapeHtml(draft.instructions) + '</textarea></label><label>Tool access<textarea id="assistantTools" placeholder="One tool ID per line">' + escapeHtml(draft.tools.join(String.fromCharCode(10))) + '</textarea></label><div class="permission-grid"><label><input id="permRead" type="checkbox"> Read local files</label><label><input id="permWrite" type="checkbox"> Write local files</label><label><input id="permNetwork" type="checkbox"> Network tools</label></div><p class="settings-copy">Write and network actions require confirmation by default.</p><button class="canvas-save" id="saveAssistant" type="button">Save assistant</button></div>'
+    );
+    byId('permRead').checked = Boolean(draft.permissions.read);
+    byId('permWrite').checked = Boolean(draft.permissions.write);
+    byId('permNetwork').checked = Boolean(draft.permissions.network);
+    byId('saveAssistant').addEventListener('click', () => {
+      const name = byId('assistantName').value.trim();
+      if (!name) { showToast('Assistant name is required'); return; }
+      draft.name = name.slice(0, 80);
+      draft.description = byId('assistantDescription').value.trim().slice(0, 200);
+      draft.instructions = byId('assistantInstructions').value.slice(0, 12000);
+      draft.tools = byId('assistantTools').value.split(String.fromCharCode(10)).map((x) => x.trim()).filter(Boolean).slice(0, 50);
+      draft.permissions = { read: byId('permRead').checked, write: byId('permWrite').checked, network: byId('permNetwork').checked };
+      if (!assistant) state.assistants.push(draft);
+      state.selectedAssistant = draft.id;
+      persist();
+      closeOverlay();
+      updateContextDrawer();
+      showToast(draft.name + ' saved');
+    });
+  }
+
+  function addToolConnection() {
+    const name = window.prompt('Connection name', 'My MCP server');
+    if (!name?.trim()) return;
+    const endpoint = window.prompt('MCP endpoint or local command', '');
+    if (!endpoint?.trim()) return;
+    state.toolConnections.push({ id: makeId('tool'), name: name.trim().slice(0, 100), type: 'MCP', endpoint: endpoint.trim().slice(0, 500), enabled: false, requiresConfirmation: true });
+    persist();
+    renderAssistants();
+    showToast('Tool connection added and disabled');
   }
 
   function showToast(message) {
@@ -425,6 +541,7 @@
       const text = textValue(input);
       const lower = text.toLowerCase();
       const project = state.projects[0];
+      const assistant = selectedAssistant();
       let response;
 
       if (lower.includes('code')) {
@@ -433,13 +550,15 @@
         response = 'I can shape this in Canvas while keeping the current thread and local project context nearby.';
       } else if (lower.includes('idea') || lower.includes('plan')) {
         response = 'Let’s give that spark a shape. Start with the outcome, name the constraint, and choose one small experiment you can finish today.';
+      } else if (assistant?.instructions) {
+        response = 'Using ' + assistant.name + ': ' + assistant.instructions.slice(0, 220);
       } else if (project?.instructions) {
         response = 'I’m working locally with the project guidance in mind: ' + project.instructions.slice(0, 220);
       } else {
         response = 'I’m ready to work through that with you. This local preview simulates the complete flow before you connect a model.';
       }
 
-      addMessage('assistant', response, state.selectedAssistant);
+      addMessage('assistant', response, assistant?.name || state.selectedAssistant);
     }, 650);
   }
 
@@ -714,24 +833,7 @@
     }
 
     if (kind === 'Assistants') {
-      const assistants = [
-        ['Forge Local', 'Clear, careful, action-oriented', '✦'],
-        ['Forge Writer', 'Sharp edits, strong voice, clean structure', '⌘'],
-        ['Forge Analyst', 'Finds patterns and makes decisions legible', '⌁']
-      ];
-      openOverlay('Assistants', 'WORKSPACE',
-        '<div class="overlay-list">' + assistants.map(([name, description, icon]) =>
-          '<button class="overlay-list-item" data-assistant="' + escapeAttribute(name) + '" type="button"><span class="assistant-avatar">' + icon +
-          '</span><span><strong>' + escapeHtml(name) + '</strong><small>' + escapeHtml(description) + '</small></span>' +
-          '<span class="overlay-action">' + (state.selectedAssistant === name ? 'Active' : 'Use') + '</span></button>'
-        ).join('') + '</div>'
-      );
-      $$('[data-assistant]').forEach((button) => button.addEventListener('click', () => {
-        state.selectedAssistant = button.dataset.assistant;
-        persist();
-        closeOverlay();
-        showToast(state.selectedAssistant + ' selected');
-      }));
+      renderAssistants();
       return;
     }
 
@@ -785,6 +887,14 @@
     showToast('New thread ready');
   }
 
+  byId('settingsButton')?.addEventListener('click', renderSettings);
+  byId('shareButton')?.addEventListener('click', () => safeClipboardWrite(window.location.href, 'Workspace link copied'));
+  byId('editAssistantContext')?.addEventListener('click', () => renderAssistants());
+  byId('finishOnboarding')?.addEventListener('click', () => {
+    state.settings.onboardingComplete = true;
+    persist();
+    byId('onboardingOverlay')?.setAttribute('aria-hidden', 'true');
+  });
   byId('newChat').addEventListener('click', newThread);
   $$('.starter-card').forEach((card) => card.addEventListener('click', () => {
     const label = $('strong', card)?.textContent || '';
@@ -982,6 +1092,8 @@
     console.error('Forge unhandled rejection:', event.reason);
   });
 
+  applyTheme();
+  if (!state.settings.onboardingComplete) byId('onboardingOverlay')?.setAttribute('aria-hidden', 'false');
   updateModelButton();
   renderThread(currentThread());
   resizeComposer();
