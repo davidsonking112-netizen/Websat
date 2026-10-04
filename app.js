@@ -823,6 +823,17 @@
     fileInput.value = '';
   });
 
+  attachmentTray.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-remove-attachment]');
+    if (!button) return;
+    const index = Number(button.dataset.removeAttachment);
+    if (!Number.isInteger(index) || index < 0 || index >= currentThread().attachments.length) return;
+    currentThread().attachments.splice(index, 1);
+    persist();
+    renderAttachments();
+    updateContextDrawer();
+  });
+
   byId('canvasMode').addEventListener('click', openCanvas);
   byId('searchButton').addEventListener('click', openPalette);
   byId('closeOverlay').addEventListener('click', closeOverlay);
@@ -832,18 +843,6 @@
     const code = event.target.closest('.copy-code');
     if (code) {
       safeClipboardWrite(decodeURIComponent(code.dataset.code || ''), 'Code copied');
-      return;
-    }
-
-    const attachmentRemove = event.target.closest('[data-remove-attachment]');
-    if (attachmentRemove) {
-      const index = Number(attachmentRemove.dataset.removeAttachment);
-      if (Number.isInteger(index) && index >= 0) {
-        currentThread().attachments.splice(index, 1);
-        persist();
-        renderAttachments();
-        updateContextDrawer();
-      }
       return;
     }
 
