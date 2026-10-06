@@ -85,7 +85,10 @@
       ? thread.attachments.map((a) => ({
           name: textValue(a?.name, 'Unnamed file').slice(0, 255),
           type: textValue(a?.type, 'application/octet-stream').slice(0, 120),
-          size: Math.max(0, finiteNumber(a?.size))
+          size: Math.max(0, finiteNumber(a?.size)),
+          content: textValue(a?.content).slice(0, 1000000),
+          preview: textValue(a?.preview).slice(0, 2500000),
+          truncated: Boolean(a?.truncated)
         })).filter((a) => a.name)
       : [];
     return {
@@ -438,6 +441,61 @@
     });
   }
 
+  const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
+  const MAX_IMAGE_PREVIEW_BYTES = 2 * 1024 * 1024;
+  const TEXT_EXTENSIONS = /\.(txt|md|markdown|json|csv|tsv|js|jsx|ts|tsx|css|html|htm|xml|yaml|yml|py|rb|go|rs|java|c|cpp|h|sql|sh|log)$/i;
+
+  function isTextAttachment(file) {
+    return Boolean(file?.type?.startsWith('text/')) || TEXT_EXTENSIONS.test(file?.name || '') || /json|javascript|xml|yaml/.test(file?.type || '');
+  }
+
+  function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error || new Error('Could not read file'));
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.readAsText(file);
+    });
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error || new Error('Could not preview file'));
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function prepareAttachment(file) {
+    const base = { name: file.name, type: file.type || 'application/octet-stream', size: file.size, content: '', preview: '', truncated: false };
+    if (isTextAttachment(file)) {
+      if (file.size > MAX_TEXT_ATTACHMENT_BYTES) {
+        const text = await readFileAsText(file);
+        base.content = text.slice(0, MAX_TEXT_ATTACHMENT_BYTES);
+        base.truncated = true;
+      } else {
+        base.content = await readFileAsText(file);
+      }
+    } else if (file.type.startsWith('image/') && file.size <= MAX_IMAGE_PREVIEW_BYTES) {
+      base.preview = await readFileAsDataUrl(file);
+    }
+    return base;
+  }
+
+  function attachmentSummary(attachment) {
+    const size = attachment.size < 1024 ? attachment.size + ' B' : attachment.size < 1024 * 1024 ? (attachment.size / 1024).toFixed(1) + ' KB' : (attachment.size / 1024 / 1024).toFixed(1) + ' MB';
+    return attachment.name + ' · ' + size + (attachment.truncated ? ' · preview truncated' : '');
+  }
+
+  function contextForThread(thread = currentThread()) {
+    const files = (thread.attachments || []).filter((file) => file.content || file.preview).map((file) => {
+      const content = file.content ? '\n' + file.content : '\n[Image attachment available for vision input]';
+      return '\n--- ' + file.name + ' (' + file.type + ') ---' + content;
+    }).join('');
+    return files ? 'Attached local context:' + files : '';
+  }
+
   function renderAttachments() {
     attachmentTray.replaceChildren();
     (currentThread().attachments || []).forEach((attachment, index) => {
@@ -449,7 +507,15 @@
       icon.textContent = attachment.type.startsWith('image/') ? '▧' : '▤';
 
       const name = document.createElement('span');
-      name.textContent = attachment.name;
+      name.textContent = attachmentSummary(attachment);
+      chip.title = attachment.content ? 'Text content is available to Forge' : attachment.preview ? 'Image preview is available locally' : 'Metadata only';
+      if (attachment.preview) {
+        const preview = document.createElement('img');
+        preview.src = attachment.preview;
+        preview.alt = attachment.name;
+        preview.className = 'attachment-preview';
+        chip.prepend(preview);
+      }
 
       const remove = document.createElement('button');
       remove.type = 'button';
@@ -468,6 +534,21 @@
     if (heading) heading.textContent = thread.title;
     const count = $('.project-card small', contextDrawer);
     if (count) count.textContent = thread.attachments.length + ' attached files · Local workspace';
+    const attachedSection = $$('.drawer-section', contextDrawer)[0];
+    if (attachedSection) {
+      $$('.context-file', attachedSection).forEach((node) => node.remove());
+      const heading = $('.drawer-section-heading', attachedSection);
+      const files = thread.attachments || [];
+      files.forEach((file) => {
+        const row = document.createElement('div');
+        row.className = 'context-file';
+        const icon = document.createElement('span'); icon.className = 'file-icon ' + (file.type.startsWith('image/') ? 'image' : file.type.includes('css') ? 'css' : 'html'); icon.textContent = file.type.startsWith('image/') ? '▧' : file.type.includes('css') ? '✦' : '‹/›';
+        const info = document.createElement('span'); const name = document.createElement('strong'); name.textContent = file.name; const meta = document.createElement('small'); meta.textContent = attachmentSummary(file); info.append(name, meta);
+        const check = document.createElement('span'); check.className = 'file-check'; check.textContent = file.content || file.preview ? '✓' : '○';
+        row.append(icon, info, check); attachedSection.appendChild(row);
+      });
+      if (heading) heading.querySelector('span').textContent = 'Attached context · ' + files.length;
+    }
     const assistant = selectedAssistant();
     const assistantName = $('.assistant-card strong', contextDrawer);
     const assistantDescription = $('.assistant-card small', contextDrawer);
@@ -506,16 +587,58 @@
     updateStorageIndicator();
   }
 
+  function workspaceSearch(query) {
+    const q = String(query || '').trim().toLowerCase();
+    const results = [];
+    if (!q) return results;
+    state.threads.forEach((thread) => {
+      const match = thread.title.toLowerCase().includes(q) || thread.messages.some((m) => m.content.toLowerCase().includes(q));
+      if (match) results.push({ type: 'Thread', title: thread.title, detail: thread.messages.length + ' messages', action: 'thread', id: thread.id });
+      (thread.attachments || []).filter((file) => file.name.toLowerCase().includes(q) || textValue(file.content).toLowerCase().includes(q)).forEach((file) => results.push({ type: 'Attachment', title: file.name, detail: attachmentSummary(file), action: 'thread', id: thread.id }));
+    });
+    state.projects.forEach((project) => {
+      if ((project.name + ' ' + project.description + ' ' + project.instructions).toLowerCase().includes(q)) results.push({ type: 'Project', title: project.name, detail: project.files.length + ' files', action: 'project', id: project.id });
+      project.files.filter((file) => file.name.toLowerCase().includes(q)).forEach((file) => results.push({ type: 'Project file', title: file.name, detail: project.name, action: 'project', id: project.id }));
+    });
+    state.assistants.filter((a) => (a.name + ' ' + a.description + ' ' + a.instructions).toLowerCase().includes(q)).forEach((a) => results.push({ type: 'Assistant', title: a.name, detail: a.description, action: 'assistants', id: a.id }));
+    ['Forge Local', 'Forge Reasoning'].filter((model) => model.toLowerCase().includes(q)).forEach((model) => results.push({ type: 'Model', title: model, detail: 'Model Hub', action: 'models', id: model }));
+    if (state.canvas.toLowerCase().includes(q)) results.push({ type: 'Canvas', title: 'Current canvas draft', detail: 'Open Canvas', action: 'canvas', id: 'canvas' });
+    return results.slice(0, 30);
+  }
+
+  function renderSearchResults(query) {
+    const resultsNode = byId('searchResults');
+    if (!resultsNode) return;
+    const results = workspaceSearch(query);
+    resultsNode.replaceChildren();
+    resultsNode.hidden = !query;
+    if (!query) return;
+    if (!results.length) {
+      const empty = document.createElement('p'); empty.className = 'search-empty'; empty.textContent = 'No matching workspace items'; resultsNode.appendChild(empty); return;
+    }
+    results.forEach((result) => {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'search-result'; button.dataset.searchAction = result.action; button.dataset.searchId = result.id;
+      const type = document.createElement('span'); type.className = 'search-result-type'; type.textContent = result.type;
+      const body = document.createElement('span'); body.className = 'search-result-body';
+      const title = document.createElement('strong'); title.textContent = result.title;
+      const detail = document.createElement('small'); detail.textContent = result.detail;
+      body.append(title, detail); button.append(type, body); resultsNode.appendChild(button);
+    });
+  }
+
   function openPalette() {
     commandPalette.classList.add('open');
     paletteInput.value = '';
     renderThreadList('');
+    renderSearchResults('');
     setTimeout(() => paletteInput.focus(), 50);
   }
 
   function closePalette() {
     commandPalette.classList.remove('open');
     renderThreadList('');
+    renderSearchResults('');
   }
 
   function openOverlay(title, kicker, html, extra = '') {
@@ -545,6 +668,7 @@
       typing.remove();
       const text = textValue(input);
       const lower = text.toLowerCase();
+      const attachedContext = contextForThread();
       const project = state.projects[0];
       const assistant = selectedAssistant();
       let response;
@@ -560,7 +684,7 @@
       } else if (project?.instructions) {
         response = 'I’m working locally with the project guidance in mind: ' + project.instructions.slice(0, 220);
       } else {
-        response = 'I’m ready to work through that with you. This local preview simulates the complete flow before you connect a model.';
+        response = attachedContext ? 'I found local context attached to this thread. The future model runtime will use it directly; for now, the prototype has loaded ' + currentThread().attachments.length + ' file(s) locally.' : 'I’m ready to work through that with you. This local preview simulates the complete flow before you connect a model.';
       }
 
       addMessage('assistant', response, assistant?.name || state.selectedAssistant);
@@ -892,8 +1016,47 @@
     showToast('New thread ready');
   }
 
+  function threadMarkdown(thread = currentThread()) {
+    const lines = ['# ' + thread.title, '', 'Generated by Forge · local workspace', ''];
+    thread.messages.forEach((message) => lines.push('## ' + (message.kind === 'user' ? 'You' : (message.label || 'Forge')), '', message.content, ''));
+    if (thread.attachments?.length) lines.push('## Attached files', '', ...thread.attachments.map(attachmentSummary), '');
+    return lines.join('\n');
+  }
+
+  function openShareDialog() {
+    const thread = currentThread();
+    openOverlay('Share thread', 'LOCAL EXPORT', '<div class="share-panel"><p class="settings-copy">Choose what to share. Nothing leaves this device unless you use your system share target.</p><div class="share-preview"><strong>' + escapeHtml(thread.title) + '</strong><small>' + thread.messages.length + ' messages · ' + thread.attachments.length + ' attachments</small></div><div class="share-actions"><button class="canvas-save" id="shareNative" type="button">Share with device</button><button class="overlay-action" id="shareCopy" type="button">Copy Markdown</button><button class="overlay-action" id="shareDownload" type="button">Download Markdown</button><button class="overlay-action" id="shareJson" type="button">Download JSON</button></div><p class="settings-copy">Attachments are represented by names and local metadata in exports; file contents remain on this device.</p></div>');
+    const markdown = threadMarkdown(thread);
+    byId('shareNative').addEventListener('click', async () => {
+      if (!navigator.share) { safeClipboardWrite(markdown, 'Markdown copied — system sharing unavailable'); return; }
+      try { await navigator.share({ title: 'Forge · ' + thread.title, text: markdown }); showToast('Shared successfully'); } catch (error) { if (error?.name !== 'AbortError') showToast('System sharing was unavailable'); }
+    });
+    byId('shareCopy').addEventListener('click', () => safeClipboardWrite(markdown, 'Markdown copied'));
+    byId('shareDownload').addEventListener('click', () => downloadBlob(markdown, 'forge-' + safeFilename(thread.title) + '.md', 'text/markdown'));
+    byId('shareJson').addEventListener('click', () => downloadBlob(JSON.stringify({ version: state.version, thread }, null, 2), 'forge-' + safeFilename(thread.title) + '.json', 'application/json'));
+  }
+
+  function safeFilename(value) { return String(value || 'thread').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'thread'; }
+  function downloadBlob(content, filename, type) { const url = URL.createObjectURL(new Blob([content], { type })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename; document.body.appendChild(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+
+  let recognition = null;
+  let isListening = false;
+  function toggleVoiceInput() {
+    const button = byId('voiceButton');
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Recognition) { showToast('Voice input is not supported in this browser'); return; }
+    if (isListening) { recognition?.stop(); return; }
+    recognition = new Recognition(); recognition.lang = navigator.language || 'en-US'; recognition.interimResults = true; recognition.continuous = false;
+    recognition.onstart = () => { isListening = true; button.classList.add('recording'); button.textContent = '■'; button.setAttribute('aria-label', 'Stop voice input'); showToast('Listening…'); };
+    recognition.onresult = (event) => { const transcript = Array.from(event.results).map((result) => result[0].transcript).join(''); promptBox.value = transcript; resizeComposer(); };
+    recognition.onerror = (event) => { if (event.error !== 'aborted') showToast('Voice input error: ' + event.error); };
+    recognition.onend = () => { isListening = false; button.classList.remove('recording'); button.textContent = '◉'; button.setAttribute('aria-label', 'Voice input'); };
+    recognition.start();
+  }
+
   byId('settingsButton')?.addEventListener('click', renderSettings);
-  byId('shareButton')?.addEventListener('click', () => safeClipboardWrite(window.location.href, 'Workspace link copied'));
+  byId('shareButton')?.addEventListener('click', openShareDialog);
+  byId('voiceButton')?.addEventListener('click', toggleVoiceInput);
   byId('editAssistantContext')?.addEventListener('click', () => renderAssistants());
   byId('finishOnboarding')?.addEventListener('click', () => {
     state.settings.onboardingComplete = true;
@@ -920,22 +1083,18 @@
   byId('addContext').addEventListener('click', () => fileInput.click());
   byId('attachButton').addEventListener('click', () => fileInput.click());
 
-  fileInput.addEventListener('change', () => {
+  fileInput.addEventListener('change', async () => {
     const files = Array.from(fileInput.files || []);
     if (!files.length) return;
-    const thread = currentThread();
-    thread.attachments ||= [];
-    files.forEach((file) => {
-      if (!thread.attachments.some((existing) => existing.name === file.name && existing.size === file.size)) {
-        thread.attachments.push({ name: file.name, type: file.type || 'application/octet-stream', size: file.size });
-      }
-    });
-    persist();
-    renderAttachments();
-    updateContextDrawer();
-    toggleContext(true);
-    showToast(files.length + ' file' + (files.length > 1 ? 's' : '') + ' attached locally');
-    fileInput.value = '';
+    const thread = currentThread(); thread.attachments ||= [];
+    let added = 0;
+    for (const file of files) {
+      if (thread.attachments.some((existing) => existing.name === file.name && existing.size === file.size)) continue;
+      try { thread.attachments.push(await prepareAttachment(file)); added += 1; }
+      catch (_) { showToast('Could not read ' + file.name); }
+    }
+    persist(); renderAttachments(); updateContextDrawer(); toggleContext(true);
+    showToast(added + ' file' + (added === 1 ? '' : 's') + ' ingested locally'); fileInput.value = '';
   });
 
   attachmentTray.addEventListener('click', (event) => {
@@ -1041,7 +1200,8 @@
   }));
 
   commandPalette.addEventListener('click', (event) => { if (event.target === commandPalette) closePalette(); });
-  paletteInput.addEventListener('input', () => renderThreadList(paletteInput.value));
+  paletteInput.addEventListener('input', () => { renderThreadList(paletteInput.value); renderSearchResults(paletteInput.value); });
+  byId('searchResults')?.addEventListener('click', (event) => { const result = event.target.closest('[data-search-action]'); if (!result) return; const action = result.dataset.searchAction; closePalette(); if (action === 'thread') { const thread = state.threads.find((item) => item.id === result.dataset.searchId); if (thread) renderThread(thread); } else if (action === 'project') renderProjectDetail(projectById(result.dataset.searchId)); else if (action === 'assistants') renderAssistants(); else if (action === 'models') showWorkspace('Model hub'); else if (action === 'canvas') openCanvas(); });
 
   document.addEventListener('click', (event) => {
     if (!event.target.closest('#modelButton') && !event.target.closest('#modelMenu')) modelMenu.classList.remove('open');

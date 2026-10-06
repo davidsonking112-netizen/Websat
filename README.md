@@ -11,6 +11,10 @@ The prototype is functional in-browser:
 - Projects, Assistants, and Model Hub open real workspace views.
 - Canvas opens an editable work surface with local save, version history, restore, and export tools.
 - Composer interactions, model switching, keyboard shortcuts, context drawer, and simulated responses work without a server.
+- Attachments are now ingested locally: text/code files are read for context, images receive local previews, large text files are truncated safely, and attachment status is visible in the context drawer.
+- Voice input uses the browser Speech Recognition API when available and gives a clear permission/support fallback when it is not.
+- Share exports now include Markdown copy/download, JSON download, and the device share sheet where supported; no remote link is implied.
+- Search is unified across threads, message text, attachment names/content, projects, project files, assistants, models, and the current Canvas draft.
 - Message and file names are rendered with safe DOM/text handling.
 - Long conversations use a bounded render window while keeping the full local message history.
 - Multiple tabs can refresh from local-storage changes.
@@ -23,7 +27,7 @@ python3 -m http.server 4173
 
 Then open <http://localhost:4173>.
 
-This is still a front-end prototype: it has no real model provider, authentication, server-side database, or remote synchronization. File attachments currently store local metadata only; their contents are not uploaded or parsed.
+This is still a front-end prototype: it has no real model provider, authentication, server-side database, or remote synchronization. Attachment contents are parsed and stored locally for the prototype, but are not uploaded or sent to a model until a provider runtime is connected.
 
 ## Validation
 

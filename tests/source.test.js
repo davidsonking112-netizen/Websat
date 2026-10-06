@@ -20,7 +20,7 @@ describe('Websat production smoke checks', () => {
 
   test('unsafe static thread placeholders are not the source of recent-thread rendering', () => {
     const html = read('index.html');
-    expect(html).toContain('class="recent-section"');
+    expect(html).toMatch(/class="[^"]*recent-section[^"]*"/);
     const js = read('app.js');
     expect(js).toContain('recentSection.appendChild(item)');
     expect(js).toContain('title.textContent = thread.title');
@@ -38,5 +38,16 @@ describe('Websat production smoke checks', () => {
     const js = read('app.js');
     expect(js).toContain('enabled: false');
     expect(js).toContain('requiresConfirmation: true');
+  });
+
+  test('local context, voice, sharing, and unified search surfaces are wired', () => {
+    const html = read('index.html');
+    const js = read('app.js');
+    expect(html).toContain('id="voiceButton"');
+    expect(html).toContain('id="searchResults"');
+    expect(js).toContain('prepareAttachment(file)');
+    expect(js).toContain('SpeechRecognition');
+    expect(js).toContain('navigator.share');
+    expect(js).toContain('workspaceSearch(query)');
   });
 });

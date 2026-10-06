@@ -10,6 +10,7 @@ export default defineConfig({
   },
   use: {
     baseURL: 'http://127.0.0.1:5173',
-    headless: true
+    headless: true,
+    launchOptions: { executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', args: ['--no-sandbox'] }
   }
 });
