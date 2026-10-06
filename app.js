@@ -63,7 +63,7 @@
       { id: 'forge-analyst', name: 'Forge Analyst', description: 'Finds patterns and makes decisions legible', instructions: 'Analyze carefully, expose assumptions, and make decisions legible.', tools: [], permissions: {} }
     ],
     toolConnections: [],
-    settings: { theme: 'system', onboardingComplete: false, reduceMotion: false }
+    settings: { theme: 'system', onboardingComplete: false, reduceMotion: false, provider: { kind: 'openai', baseUrl: '', apiKey: '', model: 'gpt-4o-mini', enabled: false } }
   });
 
   const textValue = (value, fallback = '') => typeof value === 'string' ? value : fallback;
@@ -158,12 +158,21 @@
         type: textValue(t?.type, 'MCP').slice(0, 40),
         endpoint: textValue(t?.endpoint).slice(0, 500),
         enabled: Boolean(t?.enabled),
-        requiresConfirmation: t?.requiresConfirmation !== false
+        requiresConfirmation: t?.requiresConfirmation !== false,
+        sessionId: textValue(t?.sessionId).slice(0, 300),
+        tools: Array.isArray(t?.tools) ? t.tools.slice(0, 100) : []
       })) : [],
       settings: {
         theme: ['system', 'light', 'dark'].includes(raw.settings?.theme) ? raw.settings.theme : 'system',
         onboardingComplete: Boolean(raw.settings?.onboardingComplete),
-        reduceMotion: Boolean(raw.settings?.reduceMotion)
+        reduceMotion: Boolean(raw.settings?.reduceMotion),
+        provider: {
+          kind: raw.settings?.provider?.kind === 'ollama' ? 'ollama' : 'openai',
+          baseUrl: textValue(raw.settings?.provider?.baseUrl).trim().replace(/\/$/, '').slice(0, 500),
+          apiKey: textValue(raw.settings?.provider?.apiKey).slice(0, 500),
+          model: textValue(raw.settings?.provider?.model, 'gpt-4o-mini').slice(0, 120),
+          enabled: Boolean(raw.settings?.provider?.enabled)
+        }
       }
     };
   }
@@ -217,19 +226,34 @@
   }
 
   function renderSettings() {
+    const provider = state.settings.provider || { kind: 'openai', baseUrl: '', apiKey: '', model: 'gpt-4o-mini', enabled: false };
     openOverlay('Settings', 'WORKSPACE',
-      '<div class="settings-panel"><section><h3>Appearance</h3><label class="setting-row"><span><strong>Theme</strong><small>Choose light, dark, or follow your device.</small></span><select id="themeSelect"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><label class="setting-row"><span><strong>Reduce motion</strong><small>Prefer less animation and transition.</small></span><input id="reduceMotion" type="checkbox" /></label></section><section><h3>Safety</h3><p class="settings-copy">Tool actions are disabled by default. Connections require explicit enablement and can require confirmation before execution.</p></section><button class="canvas-save" id="saveSettings" type="button">Save settings</button></div>'
+      '<div class="settings-panel"><section><h3>Appearance</h3><label class="setting-row"><span><strong>Theme</strong><small>Choose light, dark, or follow your device.</small></span><select id="themeSelect"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><label class="setting-row"><span><strong>Reduce motion</strong><small>Prefer less animation and transition.</small></span><input id="reduceMotion" type="checkbox" /></label></section>' +
+      '<section><h3>Model provider</h3><p class="settings-copy">Connect an Ollama or OpenAI-compatible endpoint. Credentials stay in this browser profile and are never included in exports.</p><label class="setting-row"><span><strong>Enable real model</strong><small>When off, Forge uses its deterministic local preview.</small></span><input id="providerEnabled" type="checkbox" /></label><label class="setting-row"><span><strong>Provider</strong><small>Ollama uses /api/chat; OpenAI-compatible uses /v1/chat/completions.</small></span><select id="providerKind"><option value="openai">OpenAI-compatible</option><option value="ollama">Ollama</option></select></label><label class="setting-row stacked"><span><strong>Base URL</strong><small>Example: http://localhost:11434 for Ollama.</small></span><input id="providerBaseUrl" type="url" placeholder="http://localhost:11434" /></label><label class="setting-row stacked"><span><strong>Model</strong></span><input id="providerModel" type="text" placeholder="llama3.2 or gpt-4o-mini" /></label><label class="setting-row stacked"><span><strong>API key</strong><small>Optional for local endpoints; stored locally.</small></span><input id="providerApiKey" type="password" autocomplete="off" /></label><button class="overlay-action" id="testProvider" type="button">Test connection</button></section>' +
+      '<section><h3>Safety</h3><p class="settings-copy">Tool actions are disabled by default. Connections require explicit enablement and confirmation before execution.</p></section><button class="canvas-save" id="saveSettings" type="button">Save settings</button></div>'
     );
     byId('themeSelect').value = state.settings.theme;
     byId('reduceMotion').checked = state.settings.reduceMotion;
+    byId('providerEnabled').checked = provider.enabled;
+    byId('providerKind').value = provider.kind;
+    byId('providerBaseUrl').value = provider.baseUrl;
+    byId('providerModel').value = provider.model;
+    byId('providerApiKey').value = provider.apiKey;
+    byId('testProvider').addEventListener('click', async () => {
+      const draft = readProviderForm();
+      try { await requestModel([{ role: 'user', content: 'Reply with exactly: Forge connection ready.' }], draft, true); showToast('Provider connection ready'); }
+      catch (error) { showToast('Provider test failed: ' + error.message); }
+    });
     byId('saveSettings').addEventListener('click', () => {
       state.settings.theme = byId('themeSelect').value;
       state.settings.reduceMotion = byId('reduceMotion').checked;
-      applyTheme();
-      persist();
-      closeOverlay();
-      showToast('Settings saved locally');
+      state.settings.provider = readProviderForm();
+      applyTheme(); persist(); closeOverlay(); updateModelButton(); showToast('Settings saved locally');
     });
+  }
+
+  function readProviderForm() {
+    return { kind: byId('providerKind').value === 'ollama' ? 'ollama' : 'openai', baseUrl: byId('providerBaseUrl').value.trim().replace(/\/$/, ''), apiKey: byId('providerApiKey').value.slice(0, 500), model: byId('providerModel').value.trim() || (byId('providerKind').value === 'ollama' ? 'llama3.2' : 'gpt-4o-mini'), enabled: byId('providerEnabled').checked };
   }
 
   function renderAssistants() {
@@ -240,10 +264,10 @@
         '<button class="overlay-list-item" data-assistant-id="' + escapeAttribute(assistant.id) + '" type="button"><span class="assistant-avatar">✦</span><span><strong>' + escapeHtml(assistant.name) + '</strong><small>' + escapeHtml(assistant.description) + '</small></span><span class="overlay-action">' + (selectedAssistant()?.id === assistant.id ? 'Active' : 'Use') + '</span></button>'
       ).join('') + '</div>' +
       '<div class="tool-connections"><div class="assistant-toolbar"><strong>Tool / MCP connections</strong><button class="overlay-action" id="addToolConnection">+ Add</button></div>' +
-      (state.toolConnections.length ? state.toolConnections.map((tool) => '<div class="tool-connection"><span><strong>' + escapeHtml(tool.name) + '</strong><small>' + escapeHtml(tool.type) + ' · ' + (tool.enabled ? 'Enabled' : 'Disabled') + (tool.requiresConfirmation ? ' · confirmation required' : '') + '</small></span><button class="overlay-action" data-tool-toggle="' + escapeAttribute(tool.id) + '" type="button">' + (tool.enabled ? 'Disable' : 'Enable') + '</button></div>').join('') : '<p class="empty-overlay">No tool connections yet. Add one when you are ready to connect an MCP server.</p>') +
+      (state.toolConnections.length ? state.toolConnections.map((tool) => '<div class="tool-connection"><span><strong>' + escapeHtml(tool.name) + '</strong><small>' + escapeHtml(tool.type) + ' · ' + (tool.enabled ? 'Enabled' : 'Disabled') + (tool.requiresConfirmation ? ' · confirmation required' : '') + ' · ' + (tool.tools?.length || 0) + ' tools</small></span><div class="tool-connection-actions"><button class="overlay-action" data-tool-discover="' + escapeAttribute(tool.id) + '" type="button">Discover</button><button class="overlay-action" data-tool-toggle="' + escapeAttribute(tool.id) + '" type="button">' + (tool.enabled ? 'Disable' : 'Enable') + '</button></div></div>' + (tool.tools || []).map((item) => '<button class="mcp-tool" data-tool-call="' + escapeAttribute(tool.id) + '" data-tool-name="' + escapeAttribute(item.name) + '" type="button"><strong>' + escapeHtml(item.name) + '</strong><small>' + escapeHtml(item.description || 'No description') + '</small><span>Call</span></button>').join('')).join('') : '<p class="empty-overlay">No tool connections yet. Add one when you are ready to connect an MCP server.</p>') +
       '</div>'
     );
-    $('[data-assistant-id]').forEach((button) => button.addEventListener('click', () => editAssistant(button.dataset.assistantId)));
+    $$('[data-assistant-id]').forEach((button) => button.addEventListener('click', () => editAssistant(button.dataset.assistantId)));
     byId('createAssistant').addEventListener('click', () => editAssistant(null));
     byId('addToolConnection').addEventListener('click', addToolConnection);
     $('[data-tool-toggle]').forEach((button) => button.addEventListener('click', () => {
@@ -252,6 +276,14 @@
       tool.enabled = !tool.enabled;
       persist();
       renderAssistants();
+    }));
+    $$('[data-tool-discover]').forEach((button) => button.addEventListener('click', async () => {
+      const tool = state.toolConnections.find((x) => x.id === button.dataset.toolDiscover); if (!tool) return;
+      button.disabled = true; button.textContent = 'Connecting…';
+      try { await discoverMcpTools(tool); } catch (error) { button.disabled = false; button.textContent = 'Discover'; showToast('MCP discovery failed: ' + error.message); }
+    }));
+    $$('[data-tool-call]').forEach((button) => button.addEventListener('click', () => {
+      const connection = state.toolConnections.find((x) => x.id === button.dataset.toolCall); const tool = connection?.tools.find((x) => x.name === button.dataset.toolName); if (connection && tool) callMcpTool(connection, tool);
     }));
   }
 
@@ -281,15 +313,50 @@
     });
   }
 
+  async function mcpRequest(connection, method, params = {}, id = Date.now()) {
+    const headers = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' };
+    if (connection.sessionId) headers['Mcp-Session-Id'] = connection.sessionId;
+    const response = await fetch(connection.endpoint, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id, method, params }) });
+    if (!response.ok) throw new Error('MCP HTTP ' + response.status);
+    const session = response.headers.get('Mcp-Session-Id'); if (session) connection.sessionId = session;
+    const raw = await response.text();
+    const dataLine = raw.split('\n').find((line) => line.startsWith('data:'));
+    const payload = dataLine ? dataLine.slice(5).trim() : raw;
+    const result = JSON.parse(payload);
+    if (result.error) throw new Error(result.error.message || 'MCP request failed');
+    return result.result;
+  }
+
+  async function discoverMcpTools(connection) {
+    connection.enabled = true;
+    await mcpRequest(connection, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'Forge', version: '0.3.0' } }, 1);
+    try { await mcpRequest(connection, 'notifications/initialized', {}, 2); } catch (_) {}
+    const result = await mcpRequest(connection, 'tools/list', {}, 3);
+    connection.tools = result.tools || [];
+    persist(); renderAssistants(); showToast(connection.tools.length + ' MCP tools discovered');
+  }
+
+  async function callMcpTool(connection, tool) {
+    if (!connection.enabled) { showToast('Enable this MCP connection first'); return; }
+    const raw = window.prompt('Arguments for ' + tool.name + ' as JSON', '{}');
+    if (raw === null) return;
+    let argumentsValue; try { argumentsValue = JSON.parse(raw || '{}'); } catch (_) { showToast('Arguments must be valid JSON'); return; }
+    if (connection.requiresConfirmation && !window.confirm('Allow MCP tool ' + tool.name + ' to run?')) return;
+    try {
+      const result = await mcpRequest(connection, 'tools/call', { name: tool.name, arguments: argumentsValue });
+      const text = result?.content?.map((item) => item.text || '').filter(Boolean).join('\n') || JSON.stringify(result);
+      addMessage('assistant', '**MCP result · ' + tool.name + '**\n\n' + text, 'MCP · ' + connection.name);
+      showToast('MCP tool completed');
+    } catch (error) { showToast('MCP call failed: ' + error.message); }
+  }
+
   function addToolConnection() {
     const name = window.prompt('Connection name', 'My MCP server');
     if (!name?.trim()) return;
-    const endpoint = window.prompt('MCP endpoint or local command', '');
+    const endpoint = window.prompt('MCP Streamable HTTP endpoint', 'http://localhost:3000/mcp');
     if (!endpoint?.trim()) return;
-    state.toolConnections.push({ id: makeId('tool'), name: name.trim().slice(0, 100), type: 'MCP', endpoint: endpoint.trim().slice(0, 500), enabled: false, requiresConfirmation: true });
-    persist();
-    renderAssistants();
-    showToast('Tool connection added and disabled');
+    state.toolConnections.push({ id: makeId('tool'), name: name.trim().slice(0, 100), type: 'MCP', endpoint: endpoint.trim().slice(0, 500), enabled: false, requiresConfirmation: true, sessionId: '', tools: [] });
+    persist(); renderAssistants(); showToast('MCP connection added and disabled');
   }
 
   function showToast(message) {
@@ -655,7 +722,41 @@
     overlay.setAttribute('aria-hidden', 'true');
   }
 
-  function simulateResponse(input, sourceMessageIndex = null) {
+  function buildProviderMessages(input) {
+    const thread = currentThread(); const assistant = selectedAssistant();
+    const projectContext = state.projects.filter((project) => project.instructions).map((project) => 'Project instructions · ' + project.name + ':\n' + project.instructions).join('\n\n');
+    const system = ['You are Forge, a careful local-first assistant.', assistant?.instructions || '', projectContext, contextForThread(thread)].filter(Boolean).join('\n\n');
+    return [{ role: 'system', content: system }, ...thread.messages.slice(-24).map((message) => ({ role: message.kind === 'assistant' ? 'assistant' : 'user', content: message.content })), { role: 'user', content: input }];
+  }
+
+  async function requestModel(messages, override = state.settings.provider, probe = false, onToken = null) {
+    const provider = { ...state.settings.provider, ...override };
+    if (!provider.baseUrl) throw new Error('Base URL is required');
+    const headers = { 'Content-Type': 'application/json' }; if (provider.apiKey) headers.Authorization = 'Bearer ' + provider.apiKey;
+    let url = provider.baseUrl; let body;
+    if (provider.kind === 'ollama') { url = url.replace(/\/$/, '') + '/api/chat'; body = { model: provider.model, messages, stream: true }; }
+    else { url = url.replace(/\/$/, '').replace(/\/v1$/, '') + '/v1/chat/completions'; body = { model: provider.model, messages, stream: !probe, temperature: 0.2 }; }
+    const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    if (!response.ok) throw new Error('Model HTTP ' + response.status + ' · ' + (await response.text()).slice(0, 160));
+    if (probe) return response.text();
+    if (!response.body) throw new Error('Provider did not return a stream');
+    const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let output = '';
+    const consume = (value) => { buffer += decoder.decode(value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop() || ''; lines.forEach((line) => { const raw = line.replace(/^data:\s*/, '').trim(); if (!raw || raw === '[DONE]') return; try { const json = JSON.parse(raw); const token = provider.kind === 'ollama' ? (json.message?.content || '') : (json.choices?.[0]?.delta?.content || ''); if (token) { output += token; onToken?.(output); } } catch (_) {} }); };
+    while (true) { const { done, value } = await reader.read(); if (done) break; consume(value); }
+    return output || 'The provider returned an empty response.';
+  }
+
+  async function simulateResponse(input, sourceMessageIndex = null) {
+    if (state.settings.provider?.enabled) {
+      clearTimeout(responseTimer); const typing = document.createElement('div'); typing.className = 'message assistant'; typing.innerHTML = '<div class="message-avatar forge">✦</div><div class="message-column"><div class="message-body"><div class="message-label">' + escapeHtml(selectedAssistant()?.name || 'Forge') + '</div><div class="streaming-response"><span class="typing-dots"><i></i><i></i><i></i></span></div></div></div>'; conversation.appendChild(typing); conversation.scrollTop = conversation.scrollHeight;
+      try { const output = await requestModel(buildProviderMessages(input), state.settings.provider, false, (text) => { const target = $('.streaming-response', typing); if (target) target.innerHTML = renderContent(text); conversation.scrollTop = conversation.scrollHeight; }); typing.remove(); addMessage('assistant', output, selectedAssistant()?.name || 'Forge'); }
+      catch (error) { typing.remove(); showToast('Model request failed: ' + error.message); }
+      return;
+    }
+    simulateLocalResponse(input, sourceMessageIndex);
+  }
+
+  function simulateLocalResponse(input, sourceMessageIndex = null) {
     clearTimeout(responseTimer);
     const typing = document.createElement('div');
     typing.className = 'message assistant';
@@ -1182,7 +1283,7 @@
   $$('.nav-item').forEach((item) => item.addEventListener('click', () => {
     $$('.nav-item').forEach((nav) => nav.classList.remove('active'));
     item.classList.add('active');
-    const label = item.textContent.trim().replace(/\d/g, '').trim();
+    const label = item.textContent.replace(/[^\p{L}\s]/gu, '').replace(/\d/g, '').trim();
     if (label === 'Chat') {
       closeOverlay();
       showToast('Chat workspace ready');
@@ -1205,6 +1306,24 @@
 
   document.addEventListener('click', (event) => {
     if (!event.target.closest('#modelButton') && !event.target.closest('#modelMenu')) modelMenu.classList.remove('open');
+  });
+
+  overlayBody.addEventListener('click', (event) => {
+    const discover = event.target.closest('[data-tool-discover]');
+    if (discover) {
+      const connection = state.toolConnections.find((item) => item.id === discover.dataset.toolDiscover);
+      if (!connection) return;
+      discover.disabled = true;
+      discover.textContent = 'Connecting…';
+      discoverMcpTools(connection).catch((error) => { discover.disabled = false; discover.textContent = 'Discover'; showToast('MCP discovery failed: ' + error.message); });
+      return;
+    }
+    const call = event.target.closest('[data-tool-call]');
+    if (call) {
+      const connection = state.toolConnections.find((item) => item.id === call.dataset.toolCall);
+      const tool = connection?.tools.find((item) => item.name === call.dataset.toolName);
+      if (connection && tool) callMcpTool(connection, tool);
+    }
   });
 
   document.addEventListener('keydown', (event) => {

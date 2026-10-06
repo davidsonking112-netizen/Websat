@@ -11,6 +11,8 @@ The prototype is functional in-browser:
 - Projects, Assistants, and Model Hub open real workspace views.
 - Canvas opens an editable work surface with local save, version history, restore, and export tools.
 - Composer interactions, model switching, keyboard shortcuts, context drawer, and simulated responses work without a server.
+- Forge can connect to an Ollama server or an OpenAI-compatible `/v1/chat/completions` endpoint with opt-in streaming responses.
+- Provider requests include the active assistant instructions, the first project instructions, recent thread history, and readable local attachment contents.
 - Attachments are now ingested locally: text/code files are read for context, images receive local previews, large text files are truncated safely, and attachment status is visible in the context drawer.
 - Voice input uses the browser Speech Recognition API when available and gives a clear permission/support fallback when it is not.
 - Share exports now include Markdown copy/download, JSON download, and the device share sheet where supported; no remote link is implied.
@@ -27,7 +29,7 @@ python3 -m http.server 4173
 
 Then open <http://localhost:4173>.
 
-This is still a front-end prototype: it has no real model provider, authentication, server-side database, or remote synchronization. Attachment contents are parsed and stored locally for the prototype, but are not uploaded or sent to a model until a provider runtime is connected.
+This is still a front-end prototype: it has no authentication, server-side database, or remote synchronization. Provider credentials are stored locally in browser storage, so use a restricted key or a local endpoint. MCP connections now support Streamable HTTP JSON-RPC initialize, tool discovery, and confirmed tool calls, but are still browser/CORS dependent and are not automatically invoked by the model.
 
 ## Validation
 
@@ -36,7 +38,7 @@ The production branch remains unchanged while fixes are developed on the `fix/we
 
 ## Production foundation
 
-Websat now has a Vite build/dev workflow, automated source smoke tests with Vitest, a Playwright keyboard/console smoke test, local appearance/onboarding settings, custom assistants, and guarded MCP/tool connection records.
+Websat now has a Vite build/dev workflow, automated source smoke tests with Vitest, a Playwright keyboard/console smoke test, local appearance/onboarding settings, custom assistants, guarded MCP/tool connections, and real provider integration.
 
 Windows packaging is configured with Electron + electron-builder:
 

@@ -50,4 +50,15 @@ describe('Websat production smoke checks', () => {
     expect(js).toContain('navigator.share');
     expect(js).toContain('workspaceSearch(query)');
   });
+
+  test('real provider and MCP runtime paths are wired and guarded', () => {
+    const js = read('app.js');
+    expect(js).toContain('requestModel(');
+    expect(js).toContain('buildProviderMessages(input)');
+    expect(js).toContain("'/api/chat'");
+    expect(js).toContain("'/v1/chat/completions'");
+    expect(js).toContain("mcpRequest(connection, 'tools/list'");
+    expect(js).toContain("mcpRequest(connection, 'tools/call'");
+    expect(js).toContain('requiresConfirmation');
+  });
 });
