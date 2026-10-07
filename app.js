@@ -23,6 +23,7 @@
   const fileInput = byId('fileInput');
   const attachmentTray = byId('attachmentTray');
   const recentSection = $('.recent-section');
+  const desktop = globalThis.forgeDesktop || null;
 
   const storeKey = 'forge-local-state-v1';
   const stateVersion = 2;
@@ -206,13 +207,16 @@
   function persist() {
     try {
       state.version = stateVersion;
-      localStorage.setItem(storeKey, JSON.stringify(state));
+      const persisted = JSON.parse(JSON.stringify(state));
+      if (desktop) persisted.settings.provider.apiKey = '';
+      localStorage.setItem(storeKey, JSON.stringify(persisted));
       renderThreadList();
       updateStorageIndicator();
       return true;
     } catch (error) {
       try {
         const compact = JSON.parse(JSON.stringify(state));
+        if (desktop) compact.settings.provider.apiKey = '';
         compact.threads.forEach((thread) => thread.attachments?.forEach((file) => { delete file.content; delete file.preview; file.truncated = true; }));
         compact.projects.forEach((project) => project.files?.forEach((file) => { delete file.content; delete file.preview; file.truncated = true; }));
         localStorage.setItem(storeKey, JSON.stringify(compact));
@@ -258,10 +262,16 @@
       try { await requestModel([{ role: 'user', content: 'Reply with exactly: Forge connection ready.' }], draft, true); showToast('Provider connection ready'); }
       catch (error) { showToast('Provider test failed: ' + error.message); }
     });
-    byId('saveSettings').addEventListener('click', () => {
+    byId('saveSettings').addEventListener('click', async () => {
       state.settings.theme = byId('themeSelect').value;
       state.settings.reduceMotion = byId('reduceMotion').checked;
-      state.settings.provider = readProviderForm();
+      const nextProvider = readProviderForm();
+      if (desktop) {
+        const result = await desktop.setSecret(nextProvider.apiKey);
+        if (!result?.stored && nextProvider.apiKey) { showToast('Could not store the API key securely'); return; }
+        nextProvider.apiKey = '';
+      }
+      state.settings.provider = nextProvider;
       applyTheme(); persist(); closeOverlay(); updateModelButton(); showToast('Settings saved locally');
     });
   }
@@ -363,6 +373,10 @@
     if (!endpoint?.trim()) return;
     state.toolConnections.push({ id: makeId('tool'), name: name.trim().slice(0, 100), type: 'MCP', endpoint: endpoint.trim().slice(0, 500), enabled: false, requiresConfirmation: true, sessionId: '', tools: [] });
     persist(); renderAssistants(); showToast('MCP connection added and disabled');
+  }
+
+  function notifyDesktop(title, body) {
+    if (desktop?.notify) desktop.notify(title, body);
   }
 
   function showToast(message) {
@@ -467,6 +481,7 @@
     if (save) {
       currentThread().messages.push({ kind, content: textValue(content), label: textValue(label, kind === 'assistant' ? 'Forge Local' : '') });
       persist();
+      if (kind === 'assistant') notifyDesktop(label || 'Forge', textValue(content).slice(0, 180));
     }
     conversation.scrollTop = conversation.scrollHeight;
   }
@@ -992,20 +1007,13 @@
       attachProjectFile(project.files[Number(button.dataset.fileIndex)]);
     }));
 
-    byId('addProjectFile').addEventListener('click', () => {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.multiple = true;
-      input.addEventListener('change', async () => {
-        for (const file of Array.from(input.files || [])) {
-          try { project.files.push(await prepareAttachment(file)); }
-          catch (_) { showToast('Could not read ' + file.name); }
-        }
-        persist();
-        renderProjectDetail(project);
-        showToast('Project files added locally');
-      });
-      input.click();
+    byId('addProjectFile').addEventListener('click', async () => {
+      const files = desktop?.openFiles ? await desktop.openFiles() : await chooseBrowserFiles();
+      for (const file of files) {
+        try { project.files.push(desktop ? file : await prepareAttachment(file)); }
+        catch (_) { showToast('Could not read ' + file.name); }
+      }
+      if (files.length) { persist(); renderProjectDetail(project); showToast('Project files added locally'); }
     });
 
     byId('addProjectFolder').addEventListener('click', () => {
@@ -1199,22 +1207,29 @@
   });
   byId('contextToggle').addEventListener('click', () => toggleContext());
   byId('closeContext').addEventListener('click', () => toggleContext(false));
-  byId('addContext').addEventListener('click', () => fileInput.click());
-  byId('attachButton').addEventListener('click', () => fileInput.click());
+  byId('addContext').addEventListener('click', async () => ingestAttachments(desktop?.openFiles ? await desktop.openFiles() : await chooseBrowserFiles()));
+  byId('attachButton').addEventListener('click', async () => ingestAttachments(desktop?.openFiles ? await desktop.openFiles() : await chooseBrowserFiles()));
 
-  fileInput.addEventListener('change', async () => {
-    const files = Array.from(fileInput.files || []);
-    if (!files.length) return;
+  async function chooseBrowserFiles() {
+    return new Promise((resolve) => {
+      const onChange = () => { fileInput.removeEventListener('change', onChange); resolve(Array.from(fileInput.files || [])); };
+      fileInput.addEventListener('change', onChange, { once: true });
+      fileInput.click();
+    });
+  }
+
+  async function ingestAttachments(files) {
     const thread = currentThread(); thread.attachments ||= [];
     let added = 0;
     for (const file of files) {
       if (thread.attachments.some((existing) => existing.name === file.name && existing.size === file.size)) continue;
-      try { thread.attachments.push(await prepareAttachment(file)); added += 1; }
+      try { thread.attachments.push(desktop ? file : await prepareAttachment(file)); added += 1; }
       catch (_) { showToast('Could not read ' + file.name); }
     }
+    if (!added) return;
     persist(); renderAttachments(); updateContextDrawer(); toggleContext(true);
-    showToast(added + ' file' + (added === 1 ? '' : 's') + ' ingested locally'); fileInput.value = '';
-  });
+    showToast(added + ' file' + (added === 1 ? '' : 's') + ' ingested locally');
+  }
 
   attachmentTray.addEventListener('click', (event) => {
     const button = event.target.closest('[data-remove-attachment]');
@@ -1394,10 +1409,29 @@
     console.error('Forge unhandled rejection:', event.reason);
   });
 
+  async function hydrateDesktop() {
+    if (!desktop) return;
+    const legacyKey = state.settings.provider.apiKey;
+    const secret = await desktop.getSecret();
+    if (legacyKey && !secret) await desktop.setSecret(legacyKey);
+    state.settings.provider.apiKey = secret || legacyKey || '';
+    if (legacyKey) persist();
+  }
+
+  desktop?.onMenuAction((action) => {
+    if (action === 'new-thread') newThread();
+    if (action === 'open-files') desktop.openFiles().then(ingestAttachments);
+    if (action === 'context') toggleContext();
+    if (action === 'canvas') openCanvas();
+    if (action === 'settings') renderSettings();
+  });
+
+
   applyTheme();
   if (!state.settings.onboardingComplete) byId('onboardingOverlay')?.setAttribute('aria-hidden', 'false');
   updateModelButton();
   renderThread(currentThread());
   resizeComposer();
   updateStorageIndicator();
+  void hydrateDesktop();
 })();

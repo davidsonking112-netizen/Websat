@@ -61,4 +61,16 @@ describe('Websat production smoke checks', () => {
     expect(js).toContain("mcpRequest(connection, 'tools/call'");
     expect(js).toContain('requiresConfirmation');
   });
+
+  test('desktop bridge keeps secrets and native capabilities out of the renderer', () => {
+    const main = read('electron/main.cjs');
+    const preload = read('electron/preload.cjs');
+    const js = read('app.js');
+    expect(main).toContain("safeStorage.encryptString");
+    expect(main).toContain("ipcMain.handle('forge:open-files'");
+    expect(main).toContain("ipcMain.on('forge:notify'");
+    expect(preload).toContain("contextBridge.exposeInMainWorld('forgeDesktop'");
+    expect(js).toContain('desktop.setSecret');
+    expect(js).toContain('desktop?.openFiles');
+  });
 });

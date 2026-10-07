@@ -29,7 +29,7 @@ python3 -m http.server 4173
 
 Then open <http://localhost:4173>.
 
-This is still a front-end prototype: it has no authentication, server-side database, or remote synchronization. Provider credentials are stored locally in browser storage, so use a restricted key or a local endpoint. MCP connections now support Streamable HTTP JSON-RPC initialize, tool discovery, and confirmed tool calls, but are still browser/CORS dependent and are not automatically invoked by the model.
+This is still a front-end prototype: it has no authentication, server-side database, or remote synchronization. In browser mode, provider credentials are stored locally, so use a restricted key or a local endpoint. In the Electron desktop shell, credentials use Electron `safeStorage`. MCP connections now support Streamable HTTP JSON-RPC initialize, tool discovery, and confirmed tool calls, but are still not automatically invoked by the model.
 
 ## Validation
 
@@ -53,6 +53,17 @@ The Windows workflow publishes tagged `vX.Y.Z` builds through GitHub Releases.
 ### Safety model
 
 Tool connections are stored locally, disabled by default, and marked confirmation-required by default. Assistant permissions explicitly separate local-file read, local-file write, and network capabilities. MCP discovery and calls require explicit enablement; tool calls also require confirmation by default.
+
+### Desktop shell
+
+The Electron build adds native capabilities without exposing Node APIs to the renderer:
+
+- Provider API keys are stored with Electron `safeStorage`.
+- Native file dialogs read text and image attachments with the same size limits as browser mode.
+- Assistant responses can trigger system notifications when supported by the operating system.
+- Native File/View menus expose new thread, open files, context, Canvas, settings, reload, and developer tools actions.
+
+Browser mode continues to use the file input and browser storage fallback.
 
 ### Architecture note
 
