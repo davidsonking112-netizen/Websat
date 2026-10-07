@@ -104,7 +104,10 @@
     const files = Array.isArray(project.files) ? project.files.map((f) => ({
       name: textValue(f?.name, 'Unnamed file').slice(0, 255),
       type: textValue(f?.type, 'application/octet-stream').slice(0, 120),
-      size: Math.max(0, finiteNumber(f?.size))
+      size: Math.max(0, finiteNumber(f?.size)),
+      content: textValue(f?.content).slice(0, 1000000),
+      preview: textValue(f?.preview).slice(0, 2500000),
+      truncated: Boolean(f?.truncated)
     })).filter((f) => f.name) : [];
     const folders = Array.isArray(project.folders)
       ? project.folders.map((f) => textValue(f).trim().slice(0, 120)).filter(Boolean)
@@ -208,8 +211,19 @@
       updateStorageIndicator();
       return true;
     } catch (error) {
-      showToast('Could not save locally; storage may be full or blocked');
-      return false;
+      try {
+        const compact = JSON.parse(JSON.stringify(state));
+        compact.threads.forEach((thread) => thread.attachments?.forEach((file) => { delete file.content; delete file.preview; file.truncated = true; }));
+        compact.projects.forEach((project) => project.files?.forEach((file) => { delete file.content; delete file.preview; file.truncated = true; }));
+        localStorage.setItem(storeKey, JSON.stringify(compact));
+        showToast('Storage is full; attachment bodies were omitted from the saved copy');
+        renderThreadList();
+        updateStorageIndicator();
+        return true;
+      } catch (_) {
+        showToast('Could not save locally; storage may be full or blocked');
+        return false;
+      }
     }
   }
 
@@ -270,20 +284,12 @@
     $$('[data-assistant-id]').forEach((button) => button.addEventListener('click', () => editAssistant(button.dataset.assistantId)));
     byId('createAssistant').addEventListener('click', () => editAssistant(null));
     byId('addToolConnection').addEventListener('click', addToolConnection);
-    $('[data-tool-toggle]').forEach((button) => button.addEventListener('click', () => {
+    $$('[data-tool-toggle]').forEach((button) => button.addEventListener('click', () => {
       const tool = state.toolConnections.find((x) => x.id === button.dataset.toolToggle);
       if (!tool) return;
       tool.enabled = !tool.enabled;
       persist();
       renderAssistants();
-    }));
-    $$('[data-tool-discover]').forEach((button) => button.addEventListener('click', async () => {
-      const tool = state.toolConnections.find((x) => x.id === button.dataset.toolDiscover); if (!tool) return;
-      button.disabled = true; button.textContent = 'Connecting…';
-      try { await discoverMcpTools(tool); } catch (error) { button.disabled = false; button.textContent = 'Discover'; showToast('MCP discovery failed: ' + error.message); }
-    }));
-    $$('[data-tool-call]').forEach((button) => button.addEventListener('click', () => {
-      const connection = state.toolConnections.find((x) => x.id === button.dataset.toolCall); const tool = connection?.tools.find((x) => x.name === button.dataset.toolName); if (connection && tool) callMcpTool(connection, tool);
     }));
   }
 
@@ -328,7 +334,7 @@
   }
 
   async function discoverMcpTools(connection) {
-    connection.enabled = true;
+    if (!connection.enabled) throw new Error('Enable this MCP connection before discovery');
     await mcpRequest(connection, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'Forge', version: '0.3.0' } }, 1);
     try { await mcpRequest(connection, 'notifications/initialized', {}, 2); } catch (_) {}
     const result = await mcpRequest(connection, 'tools/list', {}, 3);
@@ -722,11 +728,19 @@
     overlay.setAttribute('aria-hidden', 'true');
   }
 
-  function buildProviderMessages(input) {
+  function buildProviderMessages(input, providerKind = state.settings.provider.kind) {
     const thread = currentThread(); const assistant = selectedAssistant();
     const projectContext = state.projects.filter((project) => project.instructions).map((project) => 'Project instructions · ' + project.name + ':\n' + project.instructions).join('\n\n');
     const system = ['You are Forge, a careful local-first assistant.', assistant?.instructions || '', projectContext, contextForThread(thread)].filter(Boolean).join('\n\n');
-    return [{ role: 'system', content: system }, ...thread.messages.slice(-24).map((message) => ({ role: message.kind === 'assistant' ? 'assistant' : 'user', content: message.content })), { role: 'user', content: input }];
+    const history = thread.messages.slice(-24);
+    if (history.at(-1)?.kind === 'user' && history.at(-1).content === input) history.pop();
+    const messages = [{ role: 'system', content: system }, ...history.map((message) => ({ role: message.kind === 'assistant' ? 'assistant' : 'user', content: message.content }))];
+    const images = (thread.attachments || []).filter((file) => file.preview).map((file) => file.preview);
+    const userMessage = { role: 'user', content: input };
+    if (images.length && providerKind === 'ollama') userMessage.images = images.map((image) => image.split(',')[1] || image);
+    if (images.length && providerKind !== 'ollama') userMessage.content = [{ type: 'text', text: input }, ...images.map((image) => ({ type: 'image_url', image_url: { url: image } }))];
+    messages.push(userMessage);
+    return messages;
   }
 
   async function requestModel(messages, override = state.settings.provider, probe = false, onToken = null) {
@@ -741,15 +755,16 @@
     if (probe) return response.text();
     if (!response.body) throw new Error('Provider did not return a stream');
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let output = '';
-    const consume = (value) => { buffer += decoder.decode(value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop() || ''; lines.forEach((line) => { const raw = line.replace(/^data:\s*/, '').trim(); if (!raw || raw === '[DONE]') return; try { const json = JSON.parse(raw); const token = provider.kind === 'ollama' ? (json.message?.content || '') : (json.choices?.[0]?.delta?.content || ''); if (token) { output += token; onToken?.(output); } } catch (_) {} }); };
+    const consume = (value, flush = false) => { buffer += decoder.decode(value, { stream: !flush }); const lines = buffer.split('\n'); buffer = flush ? '' : (lines.pop() || ''); lines.forEach((line) => { const raw = line.replace(/^data:\s*/, '').trim(); if (!raw || raw === '[DONE]') return; try { const json = JSON.parse(raw); const token = provider.kind === 'ollama' ? (json.message?.content || '') : (json.choices?.[0]?.delta?.content || ''); if (token) { output += token; onToken?.(output); } } catch (_) {} }); };
     while (true) { const { done, value } = await reader.read(); if (done) break; consume(value); }
+    if (buffer.trim()) consume(new Uint8Array(), true);
     return output || 'The provider returned an empty response.';
   }
 
   async function simulateResponse(input, sourceMessageIndex = null) {
     if (state.settings.provider?.enabled) {
       clearTimeout(responseTimer); const typing = document.createElement('div'); typing.className = 'message assistant'; typing.innerHTML = '<div class="message-avatar forge">✦</div><div class="message-column"><div class="message-body"><div class="message-label">' + escapeHtml(selectedAssistant()?.name || 'Forge') + '</div><div class="streaming-response"><span class="typing-dots"><i></i><i></i><i></i></span></div></div></div>'; conversation.appendChild(typing); conversation.scrollTop = conversation.scrollHeight;
-      try { const output = await requestModel(buildProviderMessages(input), state.settings.provider, false, (text) => { const target = $('.streaming-response', typing); if (target) target.innerHTML = renderContent(text); conversation.scrollTop = conversation.scrollHeight; }); typing.remove(); addMessage('assistant', output, selectedAssistant()?.name || 'Forge'); }
+      try { const output = await requestModel(buildProviderMessages(input, state.settings.provider.kind), state.settings.provider, false, (text) => { const target = $('.streaming-response', typing); if (target) target.innerHTML = renderContent(text); conversation.scrollTop = conversation.scrollHeight; }); typing.remove(); addMessage('assistant', output, selectedAssistant()?.name || 'Forge'); }
       catch (error) { typing.remove(); showToast('Model request failed: ' + error.message); }
       return;
     }
@@ -941,7 +956,7 @@
     const thread = currentThread();
     thread.attachments ||= [];
     if (!thread.attachments.some((item) => item.name === file.name)) {
-      thread.attachments.push({ name: file.name, type: file.type || 'file', size: file.size || 0 });
+      thread.attachments.push({ name: file.name, type: file.type || 'file', size: file.size || 0, content: file.content || '', preview: file.preview || '', truncated: Boolean(file.truncated) });
       persist();
       renderAttachments();
       updateContextDrawer();
@@ -981,8 +996,11 @@
       const input = document.createElement('input');
       input.type = 'file';
       input.multiple = true;
-      input.addEventListener('change', () => {
-        Array.from(input.files || []).forEach((file) => project.files.push({ name: file.name, type: file.type, size: file.size }));
+      input.addEventListener('change', async () => {
+        for (const file of Array.from(input.files || [])) {
+          try { project.files.push(await prepareAttachment(file)); }
+          catch (_) { showToast('Could not read ' + file.name); }
+        }
         persist();
         renderProjectDetail(project);
         showToast('Project files added locally');

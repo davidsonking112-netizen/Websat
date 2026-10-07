@@ -54,7 +54,7 @@ describe('Websat production smoke checks', () => {
   test('real provider and MCP runtime paths are wired and guarded', () => {
     const js = read('app.js');
     expect(js).toContain('requestModel(');
-    expect(js).toContain('buildProviderMessages(input)');
+    expect(js).toContain('buildProviderMessages(input, state.settings.provider.kind)');
     expect(js).toContain("'/api/chat'");
     expect(js).toContain("'/v1/chat/completions'");
     expect(js).toContain("mcpRequest(connection, 'tools/list'");

@@ -12,7 +12,7 @@ The prototype is functional in-browser:
 - Canvas opens an editable work surface with local save, version history, restore, and export tools.
 - Composer interactions, model switching, keyboard shortcuts, context drawer, and simulated responses work without a server.
 - Forge can connect to an Ollama server or an OpenAI-compatible `/v1/chat/completions` endpoint with opt-in streaming responses.
-- Provider requests include the active assistant instructions, the first project instructions, recent thread history, and readable local attachment contents.
+- Provider requests include active assistant instructions, saved project instructions, recent thread history, and readable local attachment contents.
 - Attachments are now ingested locally: text/code files are read for context, images receive local previews, large text files are truncated safely, and attachment status is visible in the context drawer.
 - Voice input uses the browser Speech Recognition API when available and gives a clear permission/support fallback when it is not.
 - Share exports now include Markdown copy/download, JSON download, and the device share sheet where supported; no remote link is implied.
@@ -52,7 +52,7 @@ The Windows workflow publishes tagged `vX.Y.Z` builds through GitHub Releases.
 
 ### Safety model
 
-Tool connections are stored locally, disabled by default, and marked confirmation-required by default. Assistant permissions explicitly separate local-file read, local-file write, and network capabilities. The current frontend does not execute MCP servers itself; these records define the permission boundary for the future tool runtime.
+Tool connections are stored locally, disabled by default, and marked confirmation-required by default. Assistant permissions explicitly separate local-file read, local-file write, and network capabilities. MCP discovery and calls require explicit enablement; tool calls also require confirmation by default.
 
 ### Architecture note
 
