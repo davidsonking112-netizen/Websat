@@ -116,4 +116,14 @@ describe('Websat production smoke checks', () => {
     expect(demo).toContain('Speaker A');
     expect(demo).toContain('Speaker B');
   });
+
+  test('chat formatting keeps code scannable and formulas distinguishable', () => {
+    const js = read('app.js');
+    const css = read('styles.css');
+    expect(js).toContain('formatCodeLines');
+    expect(js).toContain('role="math"');
+    expect(js).toContain('formula-block');
+    expect(css).toContain('.code-line');
+    expect(css).toContain('.formula-block');
+  });
 });

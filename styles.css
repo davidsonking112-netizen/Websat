@@ -91,3 +91,17 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .mcp-assistant-choice strong { color: var(--ink); font-size: 11px; }
 .mcp-assistant-choice small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 .tool-connection-actions { flex-wrap: wrap; justify-content: flex-end; }
+.code-block { overflow-x: auto; white-space: normal; }
+.code-block code { display: grid; gap: 1px; padding: 11px 0; }
+.code-line { display: grid; grid-template-columns: 34px minmax(0, 1fr); min-width: max-content; line-height: 1.6; }
+.line-no { color: #766d82; text-align: right; padding-right: 10px; user-select: none; }
+.line-content { padding-right: 14px; white-space: pre; }
+.tok-comment { color: #9eaa9d; }
+.tok-string { color: #e8c58a; }
+.tok-keyword { color: #c9b5ff; font-weight: 700; }
+.formula-block { display: flex; align-items: baseline; gap: 10px; margin: 13px 0; padding: 11px 13px; border-left: 3px solid #9a7ef0; border-radius: 0 8px 8px 0; background: #f4f0ff; color: #41365f; overflow-x: auto; }
+.formula-block code { font: 600 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.formula-label { flex: 0 0 auto; color: #8065d0; font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.formula-inline { display: inline-flex; margin: 0 3px; padding: 2px 7px; vertical-align: baseline; border-left-width: 2px; }
+.formula-inline .formula-label { display: none; }
+@media (max-width: 620px) { .code-line { grid-template-columns: 29px minmax(0, 1fr); } .line-no { padding-right: 7px; } .formula-block { align-items: flex-start; flex-direction: column; gap: 4px; } }

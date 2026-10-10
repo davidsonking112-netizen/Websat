@@ -572,16 +572,27 @@
     return safe;
   }
 
+  function formatCodeLines(code) {
+    return code.split('\n').map((line, index) => '<span class="code-line"><span class="line-no" aria-hidden="true">' + String(index + 1).padStart(2, '0') + '</span><span class="line-content">' + highlightCode(line || ' ') + '</span></span>').join('');
+  }
+
   function renderContent(value) {
     let safe = escapeHtml(value);
     const blocks = [];
+    const formulas = [];
     safe = safe.replace(/\`\`\`([\w-]+)?\n([\s\S]*?)\`\`\`/g, (_, lang, code) => {
       const id = 'code-' + blocks.length;
       blocks.push(
         '<pre class="code-block"><div><span>' + escapeHtml(lang || 'text') +
         '</span><button class="copy-code" data-code="' + encodeURIComponent(code) +
-        '" type="button">Copy</button></div><code>' + highlightCode(code) + '</code></pre>'
+        '" type="button">Copy</button></div><code aria-label="Formatted ' + escapeAttribute(lang || 'text') + ' code">' + formatCodeLines(code) + '</code></pre>'
       );
+      return '%%' + id + '%%';
+    });
+    safe = safe.replace(/\$\$([\s\S]*?)\$\$|\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)/g, (_, display, bracket, inline) => {
+      const id = 'formula-' + formulas.length;
+      const formula = (display ?? bracket ?? inline ?? '').trim();
+      formulas.push('<div class="formula-block' + (inline ? ' formula-inline' : '') + '" role="math"><span class="formula-label">Formula</span><code>' + escapeHtml(formula) + '</code></div>');
       return '%%' + id + '%%';
     });
     safe = safe
@@ -589,6 +600,7 @@
       .replace(/\`([^\`]+)\`/g, '<code class="inline-code">$1</code>')
       .replace(/\n/g, '<br>');
     blocks.forEach((block, index) => { safe = safe.replace('%%code-' + index + '%%', block); });
+    formulas.forEach((formula, index) => { safe = safe.replace('%%formula-' + index + '%%', formula); });
     return safe;
   }
 
