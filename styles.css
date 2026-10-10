@@ -91,6 +91,26 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .mcp-assistant-choice strong { color: var(--ink); font-size: 11px; }
 .mcp-assistant-choice small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 .tool-connection-actions { flex-wrap: wrap; justify-content: flex-end; }
+:root[data-theme="light"] { color-scheme: light; --panel: #f1eee9; --panel-2: #e9e5df; }
+:root[data-theme="light"] .sidebar { color: #403a40; border-right: 1px solid #ded8d1; }
+:root[data-theme="light"] .brand-badge { color: #847b82; border-color: #cfc7bf; }
+:root[data-theme="light"] .workspace-switcher, :root[data-theme="light"] .account { color: #403a40; }
+:root[data-theme="light"] .workspace-switcher:hover, :root[data-theme="light"] .account:hover { background: #e7e2dc; border-color: #d3cbc3; }
+:root[data-theme="light"] .new-chat { background: #fffdfa; border-color: #d7cec6; color: #403a40; box-shadow: 0 4px 15px #8e81701a; }
+:root[data-theme="light"] .new-chat:hover { background: #fff; border-color: #b8a4f4; }
+:root[data-theme="light"] .new-chat kbd { background: #ebe6df; border-color: #d7cec6; color: #756d70; }
+:root[data-theme="light"] .nav-item, :root[data-theme="light"] .thread-item { color: #777074; }
+:root[data-theme="light"] .nav-item.active, :root[data-theme="light"] .nav-item:hover, :root[data-theme="light"] .thread-item:hover { background: #e5e0da; color: #403a40; }
+:root[data-theme="light"] .thread-item.selected { color: #403a40; }
+:root[data-theme="light"] .usage-card { background: #fffdfa; border-color: #ddd5cd; }
+:root[data-theme="light"] .usage-top { color: #686064; }
+:root[data-theme="light"] .usage-card small { color: #8d8580; }
+:root[data-theme="light"] .usage-bar { background: #e2dcd5; }
+:root[data-theme="light"] .account small { color: #8d8580; }
+:root[data-theme="light"] .context-drawer { background: #fffdfa; border-color: #ded8d1; }
+:root[data-theme="light"] .context-toggle, :root[data-theme="light"] .share-button { color: #5e585d; }
+.attachment-audio { width: 180px; height: 28px; }
+.attachment-video { width: 180px; height: 96px; object-fit: cover; border-radius: 5px; }
 .code-block { overflow-x: auto; white-space: normal; }
 .code-block code { display: grid; gap: 1px; padding: 11px 0; }
 .code-line { display: grid; grid-template-columns: 34px minmax(0, 1fr); min-width: max-content; line-height: 1.6; }

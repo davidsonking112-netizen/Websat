@@ -126,4 +126,16 @@ describe('Websat production smoke checks', () => {
     expect(css).toContain('.code-line');
     expect(css).toContain('.formula-block');
   });
+
+  test('light mode and multimodal imports have explicit runtime paths', () => {
+    const js = read('app.js');
+    const css = read('styles.css');
+    expect(js).toContain("document.documentElement.dataset.theme = theme");
+    expect(js).toContain('MAX_MEDIA_PREVIEW_BYTES');
+    expect(js).toContain("file.type.startsWith('audio/')");
+    expect(js).toContain("file.type.startsWith('video/')");
+    expect(js).toContain("file.mediaKind === 'image'");
+    expect(css).toContain(':root[data-theme="light"] .sidebar');
+    expect(css).toContain('.attachment-video');
+  });
 });

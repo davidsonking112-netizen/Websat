@@ -90,6 +90,8 @@
           size: Math.max(0, finiteNumber(a?.size)),
           content: textValue(a?.content).slice(0, 1000000),
           preview: textValue(a?.preview).slice(0, 2500000),
+          mediaKind: ['image', 'audio', 'video'].includes(a?.mediaKind) ? a.mediaKind : '',
+          modelContext: textValue(a?.modelContext).slice(0, 1000),
           truncated: Boolean(a?.truncated)
         })).filter((a) => a.name)
       : [];
@@ -109,6 +111,8 @@
       size: Math.max(0, finiteNumber(f?.size)),
       content: textValue(f?.content).slice(0, 1000000),
       preview: textValue(f?.preview).slice(0, 2500000),
+      mediaKind: ['image', 'audio', 'video'].includes(f?.mediaKind) ? f.mediaKind : '',
+      modelContext: textValue(f?.modelContext).slice(0, 1000),
       truncated: Boolean(f?.truncated)
     })).filter((f) => f.name) : [];
     const folders = Array.isArray(project.folders)
@@ -699,6 +703,7 @@
 
   const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
   const MAX_IMAGE_PREVIEW_BYTES = 2 * 1024 * 1024;
+  const MAX_MEDIA_PREVIEW_BYTES = 4 * 1024 * 1024;
   const TEXT_EXTENSIONS = /\.(txt|md|markdown|json|csv|tsv|js|jsx|ts|tsx|css|html|htm|xml|yaml|yml|py|rb|go|rs|java|c|cpp|h|sql|sh|log)$/i;
 
   function isTextAttachment(file) {
@@ -724,7 +729,8 @@
   }
 
   async function prepareAttachment(file) {
-    const base = { name: file.name, type: file.type || 'application/octet-stream', size: file.size, content: '', preview: '', truncated: false };
+    const mediaKind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('audio/') ? 'audio' : file.type.startsWith('video/') ? 'video' : '';
+    const base = { name: file.name, type: file.type || 'application/octet-stream', size: file.size, content: '', preview: '', mediaKind, modelContext: '', truncated: false };
     if (isTextAttachment(file)) {
       if (file.size > MAX_TEXT_ATTACHMENT_BYTES) {
         const text = await readFileAsText(file);
@@ -735,18 +741,26 @@
       }
     } else if (file.type.startsWith('image/') && file.size <= MAX_IMAGE_PREVIEW_BYTES) {
       base.preview = await readFileAsDataUrl(file);
+      base.modelContext = 'Image attachment available for vision input.';
+    } else if ((file.type.startsWith('audio/') || file.type.startsWith('video/')) && file.size <= MAX_MEDIA_PREVIEW_BYTES) {
+      base.preview = await readFileAsDataUrl(file);
+      base.modelContext = (mediaKind === 'audio' ? 'Audio' : 'Video') + ' attachment imported locally. The current provider adapter passes its metadata; transcription or video understanding requires a provider that supports that media type.';
+    } else if (mediaKind) {
+      base.modelContext = (mediaKind[0].toUpperCase() + mediaKind.slice(1)) + ' attachment imported as metadata; local preview limit exceeded.';
+      base.truncated = true;
     }
     return base;
   }
 
   function attachmentSummary(attachment) {
     const size = attachment.size < 1024 ? attachment.size + ' B' : attachment.size < 1024 * 1024 ? (attachment.size / 1024).toFixed(1) + ' KB' : (attachment.size / 1024 / 1024).toFixed(1) + ' MB';
-    return attachment.name + ' · ' + size + (attachment.truncated ? ' · preview truncated' : '');
+    const kind = attachment.mediaKind ? ' · ' + attachment.mediaKind : '';
+    return attachment.name + ' · ' + size + kind + (attachment.truncated ? ' · preview truncated' : '');
   }
 
   function contextForThread(thread = currentThread()) {
-    const files = (thread.attachments || []).filter((file) => file.content || file.preview).map((file) => {
-      const content = file.content ? '\n' + file.content : '\n[Image attachment available for vision input]';
+    const files = (thread.attachments || []).filter((file) => file.content || file.preview || file.modelContext).map((file) => {
+      const content = file.content ? '\n' + file.content : '\n[' + (file.modelContext || (file.mediaKind ? file.mediaKind + ' attachment available locally' : 'Image attachment available for vision input')) + ']';
       return '\n--- ' + file.name + ' (' + file.type + ') ---' + content;
     }).join('');
     return files ? 'Attached local context:' + files : '';
@@ -760,16 +774,17 @@
 
       const icon = document.createElement('span');
       icon.className = 'attachment-icon';
-      icon.textContent = attachment.type.startsWith('image/') ? '▧' : '▤';
+      icon.textContent = attachment.mediaKind === 'audio' ? '♫' : attachment.mediaKind === 'video' ? '▶' : attachment.type.startsWith('image/') ? '▧' : '▤';
 
       const name = document.createElement('span');
       name.textContent = attachmentSummary(attachment);
-      chip.title = attachment.content ? 'Text content is available to Forge' : attachment.preview ? 'Image preview is available locally' : 'Metadata only';
+      chip.title = attachment.content ? 'Text content is available to Forge' : attachment.modelContext || (attachment.preview ? 'Media preview is available locally' : 'Metadata only');
       if (attachment.preview) {
-        const preview = document.createElement('img');
+        const preview = document.createElement(attachment.mediaKind === 'audio' ? 'audio' : attachment.mediaKind === 'video' ? 'video' : 'img');
         preview.src = attachment.preview;
-        preview.alt = attachment.name;
-        preview.className = 'attachment-preview';
+        if (attachment.mediaKind === 'audio' || attachment.mediaKind === 'video') preview.controls = true;
+        else preview.alt = attachment.name;
+        preview.className = attachment.mediaKind === 'audio' ? 'attachment-audio' : attachment.mediaKind === 'video' ? 'attachment-video' : 'attachment-preview';
         chip.prepend(preview);
       }
 
@@ -909,7 +924,7 @@
     const history = thread.messages.filter((_, index) => index !== omitMessageIndex).slice(-24);
     if (history.at(-1)?.kind === 'user' && history.at(-1).content === input) history.pop();
     const messages = [{ role: 'system', content: system }, ...history.map((message) => ({ role: message.kind === 'assistant' ? 'assistant' : 'user', content: message.content }))];
-    const images = (thread.attachments || []).filter((file) => file.preview).map((file) => file.preview);
+    const images = (thread.attachments || []).filter((file) => file.preview && (file.mediaKind === 'image' || file.type.startsWith('image/'))).map((file) => file.preview);
     const userMessage = { role: 'user', content: input };
     if (images.length && providerKind === 'ollama') userMessage.images = images.map((image) => image.split(',')[1] || image);
     if (images.length && providerKind !== 'ollama') userMessage.content = [{ type: 'text', text: input }, ...images.map((image) => ({ type: 'image_url', image_url: { url: image } }))];
@@ -1306,7 +1321,7 @@
     const thread = currentThread();
     thread.attachments ||= [];
     if (!thread.attachments.some((item) => item.name === file.name)) {
-      thread.attachments.push({ name: file.name, type: file.type || 'file', size: file.size || 0, content: file.content || '', preview: file.preview || '', truncated: Boolean(file.truncated) });
+      thread.attachments.push({ name: file.name, type: file.type || 'file', size: file.size || 0, content: file.content || '', preview: file.preview || '', mediaKind: file.mediaKind || '', modelContext: file.modelContext || '', truncated: Boolean(file.truncated) });
       persist();
       renderAttachments();
       updateContextDrawer();
