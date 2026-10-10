@@ -54,12 +54,16 @@ describe('Websat production smoke checks', () => {
   test('real provider and MCP runtime paths are wired and guarded', () => {
     const js = read('app.js');
     expect(js).toContain('requestModel(');
-    expect(js).toContain('buildProviderMessages(input, state.settings.provider.kind)');
+    expect(js).toContain('buildProviderMessages(input, provider.kind, replaceMessageIndex, thread, assistant)');
     expect(js).toContain("'/api/chat'");
     expect(js).toContain("'/v1/chat/completions'");
     expect(js).toContain("mcpRequest(connection, 'tools/list'");
     expect(js).toContain("mcpRequest(connection, 'tools/call'");
     expect(js).toContain('requiresConfirmation');
+    expect(js).toContain('completeProviderTurn(');
+    expect(js).toContain('availableMcpTools(assistant)');
+    expect(js).toContain('tool_choice = \'auto\'');
+    expect(js).toContain('systemPrompt');
   });
 
   test('desktop bridge keeps secrets and native capabilities out of the renderer', () => {
@@ -69,8 +73,36 @@ describe('Websat production smoke checks', () => {
     expect(main).toContain("safeStorage.encryptString");
     expect(main).toContain("ipcMain.handle('forge:open-files'");
     expect(main).toContain("ipcMain.on('forge:notify'");
+    expect(main).toContain("ipcMain.handle('forge:provider-request'");
+    expect(main).toContain("ipcMain.handle('forge:mcp-request'");
+    expect(main).toContain("ipcMain.handle('forge:has-secret'");
     expect(preload).toContain("contextBridge.exposeInMainWorld('forgeDesktop'");
     expect(js).toContain('desktop.setSecret');
+    expect(js).toContain('desktop?.requestProvider');
+    expect(js).not.toContain('desktop.getSecret');
     expect(js).toContain('desktop?.openFiles');
+  });
+
+  test('threads and complete message histories are not truncated and regeneration replaces in place', () => {
+    const js = read('app.js');
+    expect(js).toContain('state.threads.forEach((thread, index)');
+    expect(js).not.toContain('state.threads.slice(0, 100)');
+    expect(js).not.toContain('state.threads = state.threads.slice(0, 100)');
+    expect(js).toContain('thread.messages.forEach((message, index)');
+    expect(js).not.toContain('thread.messages.length - 36');
+    expect(js).toContain('thread.messages[replaceMessageIndex] = message');
+    expect(js).toContain('simulateResponse(prompt, userIndex, index, thread.id)');
+  });
+
+  test('desktop navigation and document resources are constrained', () => {
+    const html = read('index.html');
+    const main = read('electron/main.cjs');
+    expect(html).toContain('Content-Security-Policy');
+    expect(html).toContain("script-src 'self'");
+    expect(html).toContain("object-src 'none'");
+    expect(main).toContain('app.enableSandbox()');
+    expect(main).toContain("navigationUrl !== appUrl");
+    expect(main).toContain("parsed.protocol === 'https:'");
+    expect(main).toContain("url === 'about:blank'");
   });
 });
