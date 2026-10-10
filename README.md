@@ -44,6 +44,10 @@ This is still a front-end prototype: it has no user authentication, server-side 
 
 Validation covers Vitest source checks, Playwright browser regressions for provider authentication/system prompts, Ollama streaming, MCP tool execution and discovery pagination, the production build, and Electron main/preload syntax checks.
 
+### Forge research demo
+
+Run `npm run dev -- --host 0.0.0.0` and open `/?forgeDemo=all` to load a reproducible local demo pack. It seeds Canvas with an AI-assisted 450-word, source-linked Nigeria fuel-subsidy essay and an eight-slide outline, plus separate threads for a 52-message Gen Z/Gen Alpha debate and a before/after Forge deployment refactor. The demo is URL-triggered and does not alter the normal workspace unless that URL is used.
+
 
 ## Production foundation
 

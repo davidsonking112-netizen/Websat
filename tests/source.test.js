@@ -105,4 +105,15 @@ describe('Websat production smoke checks', () => {
     expect(main).toContain("parsed.protocol === 'https:'");
     expect(main).toContain("url === 'about:blank'");
   });
+
+  test('Forge demo pack is available without changing the normal local workspace', () => {
+    const html = read('index.html');
+    const js = read('app.js');
+    const demo = read('demo-content.js');
+    expect(html).toContain('demo-content.js');
+    expect(js).toContain("get('forgeDemo')");
+    expect(demo).toContain('Nigeria');
+    expect(demo).toContain('Speaker A');
+    expect(demo).toContain('Speaker B');
+  });
 });

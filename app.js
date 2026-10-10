@@ -185,6 +185,26 @@
   }
 
   function loadState() {
+    const demoMode = new URLSearchParams(window.location.search).get('forgeDemo');
+    if (demoMode === 'all' && globalThis.forgeDemoPack) {
+      const pack = globalThis.forgeDemoPack;
+      const base = defaultState();
+      const slideMarkdown = pack.slides.map((slide, index) => `## Slide ${index + 1}: ${slide.title}\n${slide.bullets.map((bullet) => `- ${bullet}`).join('\n')}`).join('\n\n');
+      const essayCanvas = `# Nigeria Fuel Subsidy Removal\n\n**Motion:** Nigeria fuel subsidy removal was a wise and profitable decision.\n\n${pack.essay}\n\n## 8-slide presentation\n\n${slideMarkdown}\n\n### Sources\n- IMF: https://www.imf.org/en/news/articles/2024/02/09/pr2443-nigeria-imf-exec-board-concludes-pfa\n- World Bank: https://documents1.worldbank.org/curated/en/099232510022425467/pdf/IDU1d4b66e6c170c6147691aaf4198a48cc7f79f.pdf`;
+      const debateMessages = pack.debate.map((content, index) => ({ kind: index % 2 === 0 ? 'user' : 'assistant', content, label: index % 2 === 0 ? '' : 'Forge Analyst' }));
+      const codeMessages = pack.codeThread.map((entry, index) => ({ kind: index % 2 === 0 ? 'user' : 'assistant', content: entry.content, label: index % 2 === 0 ? '' : 'Forge Coder' }));
+      base.canvas = essayCanvas;
+      base.canvasHistory = [{ content: essayCanvas, at: new Date().toISOString() }];
+      base.threads = [
+        { id: 'fuel-subsidy', title: 'Nigeria fuel subsidy: case for removal', messages: [{ kind: 'user', content: 'Draft a 450-word case and an 8-slide presentation supporting Nigeria fuel subsidy removal.', label: '' }, { kind: 'assistant', content: pack.essay, label: 'Forge Writer' }], attachments: [] },
+        { id: 'gen-boundary', title: 'Is 2012 Gen Z or Gen Alpha?', messages: debateMessages, attachments: [] },
+        { id: 'code-refactor', title: 'Code demo: safe Forge deployment', messages: codeMessages, attachments: [] }
+      ];
+      base.activeId = 'fuel-subsidy';
+      base.selectedAssistant = 'forge-writer';
+      base.settings.onboardingComplete = true;
+      return normalizeState(base);
+    }
     try {
       const raw = localStorage.getItem(storeKey);
       if (!raw) return defaultState();
