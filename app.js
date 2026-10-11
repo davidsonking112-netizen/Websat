@@ -1662,6 +1662,11 @@
     step.result = await adaptiveAgentTurn(task, step, [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], state.settings.provider, selectedAssistant(), (status) => {
       if (task.status === 'running') { step.statusMessage = status; task.updatedAt = new Date().toISOString(); persist(); }
     });
+    if (task.status === 'paused') {
+      step.status = 'queued';
+      agentLog(task, 'warning', 'Pause reached after the in-flight request; this step remains resumable.', step.id);
+      return 'paused';
+    }
     step.status = 'completed';
     agentLog(task, 'info', 'Completed step: ' + step.title + (step.compute ? ' · adaptive passes ' + step.compute.extraPasses + ' · confidence ' + step.compute.confidence.toFixed(2) : ''), step.id);
     persist();
