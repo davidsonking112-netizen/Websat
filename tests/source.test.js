@@ -205,4 +205,12 @@ describe('Websat production smoke checks', () => {
     expect(js).toContain("$$('[data-agent-cancel]').forEach");
     expect(js).toContain("'cancelled', 'blocked'");
   });
+
+  test('Windows desktop packaging never tries to publish implicitly', () => {
+    const pkg = JSON.parse(read('package.json'));
+    const workflow = read('.github/workflows/windows-package-smoke.yml');
+    expect(pkg.scripts['desktop:build']).toContain('--publish never');
+    expect(workflow).toContain('npm run desktop:build');
+    expect(workflow).toContain('actions/upload-artifact@v4');
+  });
 });
