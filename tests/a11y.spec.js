@@ -13,7 +13,8 @@ async function seedWorkspace(page, threads, overrides = {}) {
     ...(Array.isArray(overrides.canvasHistory) ? { canvasHistory: overrides.canvasHistory } : {}),
     ...(overrides.assistants ? { assistants: overrides.assistants } : {}),
     ...(overrides.selectedAssistant ? { selectedAssistant: overrides.selectedAssistant } : {}),
-    ...(overrides.toolConnections ? { toolConnections: overrides.toolConnections } : {})
+    ...(overrides.toolConnections ? { toolConnections: overrides.toolConnections } : {}),
+    ...(Array.isArray(overrides.agentTasks) ? { agentTasks: overrides.agentTasks } : {})
   };
   await page.addInitScript(({ key, state }) => {
     localStorage.setItem(key, JSON.stringify(state));
@@ -612,29 +613,24 @@ test('Forge adaptive compute respects the two-pass limit and records evaluation 
 });
 
 test('Forge detects dependency cycles and leaves the task blocked with a useful error', async ({ page }) => {
+  const now = new Date().toISOString();
   await seedWorkspace(page, [blankThread('agent-cycle')], {
-    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-test', model: 'mock-agent-model', enabled: true } }
-  });
-  await page.evaluate((key) => {
-    const saved = JSON.parse(localStorage.getItem(key));
-    saved.agentTasks = [{
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-test', model: 'mock-agent-model', enabled: true } },
+    agentTasks: [{
       id: 'cycle-task', title: 'Cycle task', prompt: 'Check cycle handling', status: 'paused',
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), runCount: 0, result: '', lastError: '',
+      createdAt: now, updatedAt: now, runCount: 0, result: '', lastError: '',
       schedule: { enabled: false, intervalMinutes: 60, nextRunAt: '' }, logs: [],
       steps: [
         { id: 'cycle-a', title: 'Cycle A', kind: 'work', status: 'queued', result: '', dependsOn: ['cycle-b'] },
         { id: 'cycle-b', title: 'Cycle B', kind: 'review', status: 'queued', result: '', dependsOn: ['cycle-a'] }
       ]
-    }];
-    localStorage.setItem(key, JSON.stringify(saved));
-  }, storageKey);
-  await page.reload();
+    }]
+  });
   await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
   await page.locator('[data-agent-run="cycle-task"]').click();
   await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey)).toBe('blocked');
   await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.lastError, storageKey)).toContain('dependency cycle');
 });
-
 test('Forge streaming provider timeout cancels a stalled response and records a clear error', async ({ page }) => {
   await page.route('https://provider.test/v1/chat/completions', async (route) => {
     const body = JSON.parse(route.request().postData() || '{}');
@@ -698,30 +694,26 @@ test('Forge cancellation stops at a safe checkpoint and leaves unfinished work r
   expect(resumed.runCount).toBe(2);
 });
 
-test('Forge recovers an interrupted running task from persisted state after a page restart', async ({ page }) => {
+test('Forge recovers an interrupted running task from persisted state on startup', async ({ page }) => {
   await page.route('https://provider.test/v1/chat/completions', async (route) => {
     const body = JSON.parse(route.request().postData() || '{}');
     expect(body.stream).toBe(true);
     return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Recovered after restart.' } }] }) });
   });
+  const now = new Date().toISOString();
   await seedWorkspace(page, [blankThread('agent-restart')], {
-    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-test', model: 'mock-agent-model', enabled: true } }
-  });
-  await page.evaluate((key) => {
-    const saved = JSON.parse(localStorage.getItem(key));
-    saved.agentTasks = [{
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-test', model: 'mock-agent-model', enabled: true } },
+    agentTasks: [{
       id: 'restart-task', title: 'Restart recovery', prompt: 'Recover after app restart', status: 'running',
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), runCount: 4, result: '', lastError: '',
+      createdAt: now, updatedAt: now, runCount: 4, result: '', lastError: '',
       schedule: { enabled: false, intervalMinutes: 60, nextRunAt: '' }, logs: [],
       steps: [
         { id: 'restart-plan', title: 'Recover the plan', kind: 'plan', status: 'running', result: '', dependsOn: [] },
         { id: 'restart-work', title: 'Recover the work', kind: 'work', status: 'queued', result: '', dependsOn: ['restart-plan'] },
         { id: 'restart-review', title: 'Review recovered work', kind: 'review', status: 'queued', result: '', dependsOn: ['restart-work'] }
       ]
-    }];
-    localStorage.setItem(key, JSON.stringify(saved));
-  }, storageKey);
-  await page.reload();
+    }]
+  });
   await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
   const recovered = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
   expect(recovered.runCount).toBe(5);
