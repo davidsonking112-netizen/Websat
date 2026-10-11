@@ -1538,6 +1538,9 @@
       else steps[0].kind = 'plan';
       if (steps[steps.length - 1].kind !== 'review') steps.push({ id: 'step-review-' + makeId('agent'), title: 'Verify the result against the original request', kind: 'review', status: 'queued', result: '' });
       else steps[steps.length - 1].kind = 'review';
+      if (!steps.slice(1, -1).some((step) => ['research', 'browser', 'work'].includes(step.kind))) {
+        steps.splice(steps.length - 1, 0, { id: 'step-work-' + makeId('agent'), title: 'Execute the requested task', kind: 'work', status: 'queued', result: '' });
+      }
       return { steps: steps.slice(0, 8), source: 'model planner' };
     } catch (error) {
       return { steps: buildAgentPlan(prompt), source: 'local fallback · ' + (error.message || 'planner unavailable').slice(0, 180) };
