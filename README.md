@@ -40,6 +40,15 @@ This is still a front-end prototype: it has no user authentication, server-side 
 3. Edit an assistant, allowlist the discovered MCP tools, and enable **Network tools** permission. Read-only/destructive annotations also require the corresponding assistant permission.
 4. Tool connections require approval by default. The connection's **Auto-call** setting disables that confirmation; use it only for trusted endpoints and actions.
 
+
+### Agent tasks and execution
+
+Forge's **Agents** workspace supports model-planned task decomposition when a live provider is enabled, with a deterministic local plan as a fallback. Plans use explicit prerequisite edges: independent steps can run concurrently, while synthesis and review wait for their prerequisites. Forge caps concurrency at **3 tasks globally and 3 steps per task** to bound provider load and prevent unbounded fan-out. Each step receives the task objective and completed-step results; the final review checks evidence, missing requirements, and unresolved gaps. Tool access still follows the active assistant's MCP allowlist, permissions, confirmation policy, and per-turn execution limits.
+
+**Adaptive test-time compute** starts with a bounded inference-token budget selected from task complexity and risk signals. For steps that merit extra scrutiny, a separate evaluator pass estimates confidence and flags material gaps; Forge performs at most two additional refinement passes, increases the token budget within a hard cap, and records the selected budget, pass count, confidence, and reason. This is a heuristic inference-time refinement loop, not a calibrated probability of correctness; evaluation calls add latency and provider cost, the evaluator uses the configured model and is not an independent-model guarantee.
+
+Task state, step outcomes, the latest result, run count, compute metadata, and a bounded execution log are persisted locally. Each task can be duplicated into a fresh queued copy with new step IDs and remapped dependencies; recurring schedules are disabled on copies to avoid accidental repeated runs. The task's execution report can be exported as JSON with step results, dependency metadata, adaptive-compute details, and the most recent 100 log events. Pause is a safe checkpoint: in-flight provider/tool requests finish, and unfinished steps remain resumable. Recurring tasks begin a fresh step cycle when due. Scheduling only runs while Forge is open; it is not an always-on background service. A planned or completed step is not proof that an external action succeeded—review the recorded output and evidence.
+
 ## Validation
 
 Validation covers Vitest source checks, Playwright browser regressions for provider authentication/system prompts, Canvas autosave/provider-backed edits/code export, runtime privacy disclosure, Ollama streaming, MCP tool execution and discovery pagination, the production build, and Electron main/preload syntax checks. GitHub Actions installs Chromium and runs the browser suite on pushes and pull requests.
