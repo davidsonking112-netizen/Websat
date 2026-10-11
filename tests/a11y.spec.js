@@ -530,7 +530,10 @@ test('Forge pause is available while a provider request is in flight and the tas
   await page.locator('#createAgentTask').click();
   await expect(page.locator('[data-agent-pause]')).toBeVisible();
   await page.locator('[data-agent-pause]').click();
-  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey)).toBe('paused');
+  await expect.poll(() => page.evaluate((key) => {
+    const task = JSON.parse(localStorage.getItem(key)).agentTasks[0];
+    return task?.status === 'paused' && task.steps.every((step) => step.status !== 'running');
+  }, storageKey), { timeout: 10000 }).toBe(true);
   const paused = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
   expect(paused.steps.some((step) => step.status === 'queued')).toBe(true);
   await page.locator('[data-agent-run]').click();
