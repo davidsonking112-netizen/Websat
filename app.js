@@ -218,6 +218,7 @@
           baseUrl: textValue(raw.settings?.provider?.baseUrl).trim().replace(/\/$/, '').slice(0, 500),
           apiKey: textValue(raw.settings?.provider?.apiKey).slice(0, 500),
           model: textValue(raw.settings?.provider?.model, 'gpt-4o-mini').slice(0, 120),
+          requestTimeoutMs: Math.max(250, Math.min(120000, Math.floor(Number(raw.settings?.provider?.requestTimeoutMs) || 120000))),
           enabled: Boolean(raw.settings?.provider?.enabled && providerUrlInfo(textValue(raw.settings?.provider?.baseUrl).trim().replace(/\/$/, '')).allowed)
         }
       }
