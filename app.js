@@ -1610,9 +1610,68 @@
     step.compute = { initialTokens: profile.initialTokens, extraPasses, confidence, reason: String(reason || '').slice(0, 240) };
     return result;
   }
+  function exportAgentTaskReport(task) {
+    const report = {
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      task: {
+        id: task.id, title: task.title, prompt: task.prompt, status: task.status,
+        runCount: task.runCount || 0, createdAt: task.createdAt, updatedAt: task.updatedAt,
+        result: task.result || '', lastError: task.lastError || '',
+        steps: (task.steps || []).map((step) => ({
+          id: step.id, title: step.title, kind: step.kind, status: step.status,
+          dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn : [],
+          result: step.result || '', compute: step.compute || null
+        })),
+        logs: (task.logs || []).slice(-100)
+      }
+    };
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'websat-agent-report-' + String(task.title || 'task').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48) + '.json';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    showToast('Execution report exported');
+  }
+  function duplicateAgentTask(task) {
+    const now = new Date().toISOString();
+    const idMap = new Map((task.steps || []).map((step) => [step.id, makeId('agent-step')]));
+    const steps = (task.steps || []).map((step) => ({
+      ...step,
+      id: idMap.get(step.id),
+      status: 'queued',
+      result: '',
+      compute: null,
+      statusMessage: '',
+      dependsOn: (Array.isArray(step.dependsOn) ? step.dependsOn : []).map((id) => idMap.get(id)).filter(Boolean)
+    }));
+    const copy = {
+      ...task,
+      id: makeId('agent-task'),
+      title: ('Copy: ' + (task.title || 'Agent task')).slice(0, 160),
+      status: 'queued',
+      steps,
+      createdAt: now,
+      updatedAt: now,
+      schedule: { enabled: false, intervalMinutes: task.schedule?.intervalMinutes || 60, nextRunAt: '' },
+      lastError: '',
+      result: '',
+      runCount: 0,
+      logs: []
+    };
+    agentLog(copy, 'info', 'Task duplicated from ' + task.id + ' · schedule disabled for safety.');
+    state.agentTasks.unshift(copy);
+    persist();
+    renderAgents();
+    showToast('Task duplicated · review it before running');
+  }
   function renderAgents() {
     const tasks = state.agentTasks || [];
-    const cards = tasks.length ? tasks.map((task) => '<article class="agent-task-card"><div class="agent-task-head"><div><strong>' + escapeHtml(task.title) + '</strong><small>' + escapeHtml(agentTaskSummary(task)) + '</small></div><span class="agent-status ' + escapeAttribute(task.status) + '">' + escapeHtml(task.status) + '</span></div><p class="agent-task-prompt">' + escapeHtml(task.prompt) + '</p>' + (task.result ? '<div class="agent-task-result"><strong>Latest result</strong><p>' + escapeHtml(task.result.slice(0, 1600)) + '</p></div>' : '') + (task.lastError ? '<p class="agent-task-error">' + escapeHtml(task.lastError) + '</p>' : '') + '<ol class="agent-step-list">' + task.steps.map((step) => '<li class="agent-step ' + escapeAttribute(step.status) + '"><span class="agent-step-mark">' + (step.status === 'completed' ? '✓' : step.status === 'running' ? '…' : step.status === 'blocked' ? '!' : '○') + '</span><span><strong>' + escapeHtml(step.title) + '</strong>' + (step.dependsOn?.length ? '<small>Depends on ' + escapeHtml(step.dependsOn.length + ' prerequisite(s)') + '</small>' : '<small>Independent / root step</small>') + (step.compute ? '<small>Adaptive compute: ' + step.compute.extraPasses + ' extra pass(es) · confidence ' + step.compute.confidence.toFixed(2) + '</small>' : '') + (step.result ? '<small>' + escapeHtml(step.result.slice(0, 240)) + '</small>' : '') + '</span></li>').join('') + '</ol>' + (task.logs?.length ? '<details class="agent-run-log"><summary>Execution log · ' + task.logs.length + ' events</summary><ol>' + task.logs.slice().reverse().slice(0, 20).map((entry) => '<li class="' + escapeAttribute(entry.level) + '"><time>' + escapeHtml(entry.at ? new Date(entry.at).toLocaleString() : '') + '</time><span>' + escapeHtml(entry.message) + '</span></li>').join('') + '</ol></details>' : '') + '<div class="agent-task-actions">' + ((task.status === 'queued' || task.status === 'paused' || task.status === 'blocked' || task.status === 'failed') ? '<button class="overlay-action" data-agent-run="' + escapeAttribute(task.id) + '" type="button">Run / resume</button>' : '') + (task.status === 'running' ? '<button class="overlay-action" data-agent-pause="' + escapeAttribute(task.id) + '" type="button">Pause</button>' : '') + '<button class="overlay-action" data-agent-browser="' + escapeAttribute(task.id) + '" type="button">Open research browser</button></div></article>').join('') : '<div class="empty-overlay"><strong>No agent tasks yet.</strong><small>Create a task to see its decomposed steps here.</small></div>';
+    const cards = tasks.length ? tasks.map((task) => '<article class="agent-task-card"><div class="agent-task-head"><div><strong>' + escapeHtml(task.title) + '</strong><small>' + escapeHtml(agentTaskSummary(task)) + '</small></div><span class="agent-status ' + escapeAttribute(task.status) + '">' + escapeHtml(task.status) + '</span></div><p class="agent-task-prompt">' + escapeHtml(task.prompt) + '</p>' + (task.result ? '<div class="agent-task-result"><strong>Latest result</strong><p>' + escapeHtml(task.result.slice(0, 1600)) + '</p></div>' : '') + (task.lastError ? '<p class="agent-task-error">' + escapeHtml(task.lastError) + '</p>' : '') + '<ol class="agent-step-list">' + task.steps.map((step) => '<li class="agent-step ' + escapeAttribute(step.status) + '"><span class="agent-step-mark">' + (step.status === 'completed' ? '✓' : step.status === 'running' ? '…' : step.status === 'blocked' ? '!' : '○') + '</span><span><strong>' + escapeHtml(step.title) + '</strong>' + (step.dependsOn?.length ? '<small>Depends on ' + escapeHtml(step.dependsOn.length + ' prerequisite(s)') + '</small>' : '<small>Independent / root step</small>') + (step.compute ? '<small>Adaptive compute: ' + step.compute.extraPasses + ' extra pass(es) · confidence ' + step.compute.confidence.toFixed(2) + '</small>' : '') + (step.result ? '<small>' + escapeHtml(step.result.slice(0, 240)) + '</small>' : '') + '</span></li>').join('') + '</ol>' + (task.logs?.length ? '<details class="agent-run-log"><summary>Execution log · ' + task.logs.length + ' events</summary><ol>' + task.logs.slice().reverse().slice(0, 20).map((entry) => '<li class="' + escapeAttribute(entry.level) + '"><time>' + escapeHtml(entry.at ? new Date(entry.at).toLocaleString() : '') + '</time><span>' + escapeHtml(entry.message) + '</span></li>').join('') + '</ol></details>' : '') + '<div class="agent-task-actions">' + ((task.status === 'queued' || task.status === 'paused' || task.status === 'blocked' || task.status === 'failed') ? '<button class="overlay-action" data-agent-run="' + escapeAttribute(task.id) + '" type="button">Run / resume</button>' : '') + (task.status === 'running' ? '<button class="overlay-action" data-agent-pause="' + escapeAttribute(task.id) + '" type="button">Pause</button>' : '') + '<button class="overlay-action" data-agent-duplicate="' + escapeAttribute(task.id) + '" type="button">Duplicate</button><button class="overlay-action" data-agent-export="' + escapeAttribute(task.id) + '" type="button">Export report</button><button class="overlay-action" data-agent-browser="' + escapeAttribute(task.id) + '" type="button">Open research browser</button></div></article>').join('') : '<div class="empty-overlay"><strong>No agent tasks yet.</strong><small>Create a task to see its decomposed steps here.</small></div>';
     openOverlay('Agents', 'LOCAL AGENT CONSOLE', '<div class="agent-console"><p class="settings-copy">Forge plans dependency-aware work, runs up to 3 independent steps in parallel and up to 3 tasks concurrently, and allocates extra inference passes when a result needs more scrutiny. Scheduled work resumes while Forge is open. Connect a live model and approved MCP/browser tools for real research actions.</p><section class="agent-create"><label><strong>New task</strong><textarea id="agentPrompt" rows="3" maxlength="4000" placeholder="Research a topic, compare sources, and draft a concise answer…"></textarea></label><label class="agent-schedule-toggle"><input id="agentSchedule" type="checkbox" /> Repeat while Forge is open</label><label class="agent-interval">Every <input id="agentInterval" type="number" min="15" max="10080" value="60" /> minutes</label><button class="canvas-save" id="createAgentTask" type="button">Plan task</button></section><section><div class="assistant-toolbar"><strong>Task queue</strong><span>' + tasks.length + ' saved</span></div>' + cards + '</section><p class="settings-copy agent-boundary">Background execution is resumable local work, not an always-on server worker. Closing the browser pauses execution; the next open resumes saved steps.</p></div>');
     byId('createAgentTask').addEventListener('click', async () => {
       const prompt = byId('agentPrompt').value.trim();
@@ -1633,7 +1692,9 @@
     });
     $$('[data-agent-run]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentRun); if (task) runAgentTask(task); }));
     $$('[data-agent-pause]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentPause); if (task) { task.status = 'paused'; agentLog(task, 'warning', 'Pause requested; the current model/tool request will finish before the next safe checkpoint.'); persist(); renderAgents(); showToast('Pause requested · waiting for the current step to reach a safe checkpoint'); } }));
-    $$('[data-agent-browser]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentBrowser); if (task) window.open('https://www.google.com/search?q=' + encodeURIComponent(task.prompt), '_blank', 'noopener,noreferrer'); }));
+    $('[data-agent-duplicate]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentDuplicate); if (task) duplicateAgentTask(task); }));
+    $('[data-agent-export]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentExport); if (task) exportAgentTaskReport(task); }));
+    $('[data-agent-browser]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentBrowser); if (task) window.open('https://www.google.com/search?q=' + encodeURIComponent(task.prompt), '_blank', 'noopener,noreferrer'); }));
   }
   const MAX_PARALLEL_AGENTS = 3;
   const MAX_PARALLEL_STEPS = 3;
