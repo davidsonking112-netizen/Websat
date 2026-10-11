@@ -445,14 +445,14 @@ test('Forge agent workflow completes, duplicates safely, exports a report, and h
   await page.locator('#createAgentTask').click();
 
   await expect(page.locator('.agent-task-card')).toHaveCount(1);
-  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey)).toBe('completed');
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey)).toBe('completed');
   await expect(page.locator('.agent-task-result')).toContainText('Greeting result: Hello from Forge.');
   expect(calls.filter((body) => body.stream === false)).toHaveLength(1);
   expect(calls.filter((body) => body.stream === true)).toHaveLength(3);
 
   await page.locator('[data-agent-duplicate]').first().click();
   await expect(page.locator('.agent-task-card')).toHaveCount(2);
-  const copied = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
+  const copied = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
   expect(copied.status).toBe('queued');
   expect(copied.runCount).toBe(0);
   expect(copied.schedule.enabled).toBe(false);
@@ -504,7 +504,7 @@ test('Forge runs independent steps concurrently but waits for their dependencies
   await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
   await page.locator('#agentPrompt').fill('Test parallel dependency execution');
   await page.locator('#createAgentTask').click();
-  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey)).toBe('completed');
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey)).toBe('completed');
   expect(peak).toBe(3);
   expect(peak).toBeLessThanOrEqual(3);
   for (const title of ['Independent work A', 'Independent work B', 'Independent work C', 'Independent work D']) {
@@ -535,13 +535,13 @@ test('Forge pause is available while a provider request is in flight and the tas
   await expect(page.locator('[data-agent-pause]')).toBeVisible();
   await page.locator('[data-agent-pause]').click();
   await expect.poll(() => page.evaluate((key) => {
-    const task = JSON.parse(localStorage.getItem(key)).agentTasks[0];
+    const task = JSON.parse(localStorage.getItem(key)).agentTasks?.[0];
     return task?.status === 'paused' && task.steps.every((step) => step.status !== 'running');
   }, storageKey), { timeout: 10000 }).toBe(true);
-  const paused = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
+  const paused = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
   expect(paused.steps.some((step) => step.status === 'queued')).toBe(true);
   await page.locator('[data-agent-run]').click();
-  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
 });
 
 test('Forge retries a failed step without losing completed prerequisites', async ({ page }) => {
@@ -568,13 +568,13 @@ test('Forge retries a failed step without losing completed prerequisites', async
   await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
   await page.locator('#agentPrompt').fill('Retry temporary provider failures');
   await page.locator('#createAgentTask').click();
-  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey)).toBe('failed');
-  const failed = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey)).toBe('failed');
+  const failed = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
   expect(failed.steps.find((step) => step.title === 'Plan retry').status).toBe('completed');
   expect(failed.steps.find((step) => step.title === 'Do retryable work').status).toBe('failed');
   await page.locator('[data-agent-run]').click();
-  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
-  const recovered = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
+  const recovered = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
   expect(recovered.runCount).toBe(2);
   expect(recovered.steps.find((step) => step.title === 'Plan retry').status).toBe('completed');
   expect(recovered.steps.find((step) => step.title === 'Do retryable work').status).toBe('completed');
@@ -606,8 +606,8 @@ test('Forge adaptive compute respects the two-pass limit and records evaluation 
   await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
   await page.locator('#agentPrompt').fill('Security verification for production; test comprehensively');
   await page.locator('#createAgentTask').click();
-  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey)).toBe('completed');
-  const task = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey)).toBe('completed');
+  const task = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
   expect(task.steps.every((step) => step.compute && step.compute.extraPasses <= 2 && step.compute.initialTokens <= 2600)).toBe(true);
   expect(task.steps.some((step) => step.compute.extraPasses === 2)).toBe(true);
   expect(evaluatorCalls).toBeGreaterThan(0);
@@ -631,8 +631,8 @@ test('Forge detects dependency cycles and leaves the task blocked with a useful 
   });
   await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
   await page.locator('[data-agent-run="cycle-task"]').click();
-  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey)).toBe('blocked');
-  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.lastError, storageKey)).toContain('dependency cycle');
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey)).toBe('blocked');
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.lastError, storageKey)).toContain('dependency cycle');
 });
 test('Forge streaming provider timeout cancels a stalled response and records a clear error', async ({ page }) => {
   await page.route('https://provider.test/v1/chat/completions', async (route) => {
@@ -686,15 +686,15 @@ test('Forge cancellation stops at a safe checkpoint and leaves unfinished work r
   await expect(page.locator('[data-agent-cancel]')).toBeVisible();
   await page.locator('[data-agent-cancel]').click();
   await expect.poll(() => page.evaluate((key) => {
-    const task = JSON.parse(localStorage.getItem(key)).agentTasks[0];
+    const task = JSON.parse(localStorage.getItem(key)).agentTasks?.[0];
     return task?.status === 'cancelled' && task.steps.every((step) => step.status !== 'running');
   }, storageKey), { timeout: 10000 }).toBe(true);
-  const cancelled = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
+  const cancelled = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
   expect(cancelled.steps.some((step) => step.status === 'queued')).toBe(true);
   expect(cancelled.logs.some((entry) => entry.message.includes('Cancellation reached'))).toBe(true);
   await page.locator('[data-agent-run]').click();
-  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
-  const resumed = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
+  const resumed = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
   expect(resumed.runCount).toBe(2);
 });
 
@@ -718,8 +718,8 @@ test('Forge recovers an interrupted running task from persisted state on startup
       ]
     }]
   });
-  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
-  const recovered = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
+  const recovered = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
   expect(recovered.runCount).toBe(5);
   expect(recovered.steps.every((step) => step.status === 'completed')).toBe(true);
   expect(recovered.logs.some((entry) => entry.message.includes('Run 5 started'))).toBe(true);
