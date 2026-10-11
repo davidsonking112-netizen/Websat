@@ -182,7 +182,7 @@
           baseUrl: textValue(raw.settings?.provider?.baseUrl).trim().replace(/\/$/, '').slice(0, 500),
           apiKey: textValue(raw.settings?.provider?.apiKey).slice(0, 500),
           model: textValue(raw.settings?.provider?.model, 'gpt-4o-mini').slice(0, 120),
-          enabled: Boolean(raw.settings?.provider?.enabled)
+          enabled: Boolean(raw.settings?.provider?.enabled && providerUrlInfo(textValue(raw.settings?.provider?.baseUrl).trim().replace(/\/$/, '')).allowed)
         }
       }
     };
@@ -287,6 +287,11 @@
     byId('providerBaseUrl').value = provider.baseUrl;
     byId('providerModel').value = provider.model;
     byId('providerApiKey').value = '';
+    const providerSection = byId('providerEnabled')?.closest('section');
+    const providerDisclosure = document.createElement('p');
+    providerDisclosure.className = 'settings-copy';
+    providerDisclosure.textContent = 'When enabled, prompts, recent thread history, and readable attachment text are sent to this endpoint. Check that provider’s privacy terms before connecting.';
+    providerSection?.insertBefore(providerDisclosure, byId('providerEnabled').closest('label'));
     byId('testProvider').addEventListener('click', async () => {
       const draft = readProviderForm();
       const button = byId('testProvider');
@@ -303,6 +308,11 @@
       state.settings.reduceMotion = byId('reduceMotion').checked;
       await desktopReady;
       const nextProvider = readProviderForm();
+      if (nextProvider.enabled && !providerUrlInfo(nextProvider.baseUrl).allowed) {
+        showToast('Use HTTPS for remote providers; HTTP is allowed only on loopback');
+        byId('providerBaseUrl').focus();
+        return;
+      }
       if (desktop) {
         let result = { stored: true };
         if (nextProvider.apiKey || byId('removeProviderKey').checked) result = await desktop.setSecret(nextProvider.apiKey);
@@ -1224,7 +1234,7 @@
         return;
       }
       win.opener = null;
-      win.document.write('<!doctype html><html><head><title>Forge Canvas</title></head><body><h1>Forge Canvas</h1><div id="content"></div></body></html>');
+      win.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Forge Canvas</title></head><body><h1>Forge Canvas</h1><pre id="content"></pre></body></html>');
       win.document.close();
       const target = win.document.getElementById('content');
       if (target) target.textContent = content;
@@ -1234,8 +1244,21 @@
       return;
     }
 
-    const ext = format === 'js' ? 'js' : 'md';
-    const type = format === 'js' ? 'text/javascript' : 'text/markdown';
+    if (format === 'code') {
+      const blocks = Array.from(String(content).matchAll(/```([a-z0-9_+.-]*)[ \t]*\r?\n([\s\S]*?)```/gi));
+      if (blocks.length !== 1) {
+        showToast(blocks.length ? 'Export one code block at a time; use Markdown to keep multiple blocks together' : 'No fenced code block found; use Markdown for the full draft');
+        return;
+      }
+      const language = (blocks[0][1] || 'text').toLowerCase();
+      const extensions = { javascript: 'js', js: 'js', typescript: 'ts', ts: 'ts', html: 'html', css: 'css', json: 'json', python: 'py', py: 'py', bash: 'sh', shell: 'sh', sh: 'sh', sql: 'sql', markdown: 'md', md: 'md', yaml: 'yml', yml: 'yml', xml: 'xml', java: 'java', go: 'go', rust: 'rs', rs: 'rs', c: 'c', cpp: 'cpp', csharp: 'cs', cs: 'cs', php: 'php' };
+      format = extensions[language] || 'txt';
+      content = blocks[0][2].replace(/\r?\n$/, '');
+    }
+
+    const ext = format === 'md' ? 'md' : format;
+    const types = { md: 'text/markdown', js: 'text/javascript', html: 'text/html', css: 'text/css', json: 'application/json', py: 'text/x-python', sh: 'text/x-shellscript' };
+    const type = types[ext] || 'text/plain';
     const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -1246,6 +1269,61 @@
     anchor.remove();
     setTimeout(() => URL.revokeObjectURL(url), 0);
     showToast('Canvas exported as ' + ext.toUpperCase());
+  }
+
+  async function runCanvasTool(button, editor, status) {
+    const action = button.dataset.canvasTool;
+    const instructions = {
+      shorter: 'Rewrite the draft to be more concise while preserving all important claims, facts, and caveats.',
+      polish: 'Polish the draft for clarity, grammar, and flow while preserving its meaning, voice, and factual claims.',
+      outline: 'Turn the draft into a clear, hierarchical outline. Preserve its important ideas and supporting details.',
+      comments: 'Keep the original draft unchanged and append concise, numbered editorial comments that identify ambiguity, unsupported claims, or useful next steps.'
+    };
+    if (!instructions[action]) return;
+    if (!editor.value.trim()) {
+      showToast('Add a draft to Canvas before using a writing tool');
+      return;
+    }
+    if (!state.settings.provider?.enabled) {
+      if (status) status.textContent = 'Enable a model provider in Settings to use AI writing tools. Your draft remains saved locally.';
+      showToast('Enable a model provider in Settings to use Canvas writing tools');
+      return;
+    }
+
+    const original = editor.value;
+    const thread = currentThread();
+    const tools = $$('[data-canvas-tool]', overlayBody);
+    tools.forEach((item) => { item.disabled = true; item.setAttribute('aria-busy', 'true'); });
+    editor.disabled = true;
+    if (status) status.textContent = 'Sending this draft and recent thread context to your configured provider…';
+    try {
+      await desktopReady;
+      const provider = { ...state.settings.provider };
+      const prompt = instructions[action] + '\n\nReturn only the updated Canvas content, without a preface.\n\n--- Draft ---\n' + original;
+      const messages = buildProviderMessages(prompt, provider.kind, null, thread, selectedAssistant());
+      const result = await requestModel(messages, provider, false);
+      const updated = textValue(result?.content).trim();
+      if (!updated) throw new Error('The provider returned no updated text');
+      state.canvasHistory.unshift({ content: original, at: new Date().toISOString() });
+      state.canvasHistory = state.canvasHistory.slice(0, 50);
+      editor.value = updated;
+      state.canvas = updated;
+      persist();
+      const restoreButton = byId('restoreCanvas');
+      if (restoreButton) restoreButton.disabled = false;
+      const versionLabels = $$('.canvas-version-row span', overlayBody);
+      if (versionLabels[0]) versionLabels[0].textContent = 'Draft · v' + (state.canvasHistory.length + 1);
+      if (versionLabels[1]) versionLabels[1].textContent = state.canvasHistory.length + ' saved version' + (state.canvasHistory.length === 1 ? '' : 's');
+      if (status) status.textContent = 'Updated draft autosaved locally. Restore saved version is available to undo this edit.';
+      showToast('Canvas draft updated');
+    } catch (error) {
+      editor.value = original;
+      if (status) status.textContent = 'Canvas was not changed. Check the provider connection and try again.';
+      showToast('Canvas edit failed: ' + error.message);
+    } finally {
+      editor.disabled = false;
+      tools.forEach((item) => { item.disabled = false; item.removeAttribute('aria-busy'); });
+    }
   }
 
   function openCanvas() {
@@ -1262,32 +1340,33 @@
       '<div class="canvas-mini-chat">' + miniChat + '</div>' +
       '<div class="canvas-context-note"><span>✦</span><span>Canvas shares this thread’s local context.</span></div></div>' +
       '<div class="canvas-editor"><div class="canvas-version-row"><span>Draft · v' + (historyCount + 1) + '</span><span>' +
-      (historyCount ? historyCount + ' saved version' + (historyCount > 1 ? 's' : '') : 'Unsaved') +
+      (historyCount ? historyCount + ' saved version' + (historyCount > 1 ? 's' : '') : 'No saved versions · autosaves on edits') +
       '</span></div><textarea class="canvas-textarea" id="canvasText" aria-label="Canvas editor"></textarea>' +
-      '<div class="canvas-tools"><p>Quick tools</p>' +
+      '<div class="canvas-tools"><p>AI writing tools</p>' +
+      '<p class="settings-copy">These actions send this draft, recent thread history, and readable attachments to your configured provider. They do not run MCP tools.</p>' +
       '<button class="canvas-tool" data-canvas-tool="shorter" type="button">Make shorter</button>' +
       '<button class="canvas-tool" data-canvas-tool="polish" type="button">Add final polish</button>' +
       '<button class="canvas-tool" data-canvas-tool="outline" type="button">Create outline</button>' +
       '<button class="canvas-tool" data-canvas-tool="comments" type="button">Add comments</button>' +
-      (historyCount ? '<button class="canvas-tool" id="restoreCanvas" type="button">Restore previous</button>' : '') +
+      '<button class="canvas-tool" id="restoreCanvas" type="button"' + (historyCount ? '' : ' disabled') + '>Restore saved version</button>' +
       '<button class="canvas-export" id="exportMd" type="button">Markdown</button>' +
       '<button class="canvas-export" id="exportPdf" type="button">PDF</button>' +
       '<button class="canvas-export" id="exportCode" type="button">Code</button>' +
+      '<p class="settings-copy" id="canvasStatus" role="status" aria-live="polite">Draft autosaves locally. Save a version to create a restore point.</p>' +
       '<button class="canvas-save" id="saveCanvas" type="button">Save version locally</button></div></div></div>',
       'canvas'
     );
 
     const editor = byId('canvasText');
     editor.value = state.canvas;
+    const status = byId('canvasStatus');
+    editor.addEventListener('input', () => {
+      state.canvas = editor.value;
+      persist();
+      if (status) status.textContent = 'Draft autosaved locally. Save a version to create a restore point.';
+    });
 
-    $$('.canvas-tool').forEach((button) => button.addEventListener('click', () => {
-      const action = button.dataset.canvasTool;
-      if (action === 'shorter') editor.value = editor.value.split('\n').filter(Boolean).slice(0, 3).join('\n');
-      if (action === 'outline') editor.value = '# Working outline\n\n1. Context\n2. Key idea\n3. Next step\n\n' + editor.value;
-      if (action === 'comments') editor.value = editor.value + '\n\n[Forge note: clarify the intended outcome here.]';
-      if (action === 'polish') editor.value = editor.value.trim() + '\n\nPolished for clarity and flow.';
-      showToast(button.textContent + ' applied');
-    }));
+    $$('[data-canvas-tool]').forEach((button) => button.addEventListener('click', () => runCanvasTool(button, editor, status)));
 
     byId('saveCanvas').addEventListener('click', () => {
       const content = editor.value;
@@ -1301,12 +1380,15 @@
 
     byId('exportMd').addEventListener('click', () => exportCanvasFile(editor.value, 'md'));
     byId('exportPdf').addEventListener('click', () => exportCanvasFile(editor.value, 'pdf'));
-    byId('exportCode').addEventListener('click', () => exportCanvasFile(editor.value, 'js'));
+    byId('exportCode').addEventListener('click', () => exportCanvasFile(editor.value, 'code'));
 
     const restore = byId('restoreCanvas');
     if (restore) restore.addEventListener('click', () => {
       if (state.canvasHistory[0]) {
         editor.value = state.canvasHistory[0].content;
+        state.canvas = editor.value;
+        persist();
+        if (status) status.textContent = 'Saved version restored as the current local draft.';
         showToast('Previous version restored');
       }
     });
@@ -1443,40 +1525,125 @@
       return;
     }
 
-    const models = [
-      ['Forge Local', 'Fast · private · on device'],
-      ['Forge Reasoning', 'Deeper thinking · local']
-    ];
-    openOverlay('Model hub', 'LOCAL MODELS',
-      '<div class="overlay-list">' + models.map(([name, description]) =>
-        '<button class="overlay-list-item" data-hub-model="' + escapeAttribute(name) + '" type="button"><span class="workspace-card-icon">✦</span>' +
-        '<span><strong>' + escapeHtml(name) + '</strong><small>' + escapeHtml(description) + '</small></span>' +
-        '<span class="overlay-action">' + (state.selectedModel === name ? 'Active' : 'Use') + '</span></button>'
-      ).join('') + '<div class="empty-overlay"><strong>Your models stay yours.</strong><small>Browse and switch models without leaving the workspace.</small></div></div>'
+    const choices = runtimeChoices();
+    openOverlay('Model hub', 'ACTIVE RUNTIME',
+      '<div class="overlay-list">' + choices.map((choice) =>
+        '<button class="overlay-list-item" data-runtime-mode="' + choice.mode + '" type="button"' + (choice.enabled ? '' : ' disabled') + '><span class="workspace-card-icon">✦</span>' +
+        '<span><strong>' + escapeHtml(choice.name) + '</strong><small>' + escapeHtml(choice.detail) + '</small></span>' +
+        '<span class="overlay-action">' + (choice.active ? 'Active' : choice.enabled ? 'Use' : 'Set up') + '</span></button>'
+      ).join('') + '<p class="settings-copy">The local preview is deterministic. Selecting a configured provider sends prompts and context to that endpoint.</p></div>'
     );
-    $$('[data-hub-model]').forEach((button) => button.addEventListener('click', () => {
-      state.selectedModel = button.dataset.hubModel;
-      updateModelButton();
-      persist();
-      closeOverlay();
-      showToast(state.selectedModel + ' selected');
+    $$('[data-runtime-mode]', overlayBody).forEach((button) => button.addEventListener('click', () => {
+      if (selectRuntime(button.dataset.runtimeMode)) closeOverlay();
     }));
   }
 
+  function providerUrlInfo(baseUrl) {
+    try {
+      const url = new URL(textValue(baseUrl).trim());
+      const loopback = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname);
+      const allowed = ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && (url.protocol !== 'http:' || loopback);
+      return { allowed, host: url.host, message: allowed ? '' : 'Use HTTPS for remote providers; HTTP is allowed only on loopback' };
+    } catch (_) {
+      return { allowed: false, host: '', message: 'Configure a valid provider base URL in Settings first' };
+    }
+  }
+
+  function providerRuntimeInfo() {
+    const provider = state.settings.provider || {};
+    const endpoint = providerUrlInfo(provider.baseUrl);
+    const configured = endpoint.allowed && Boolean(textValue(provider.model).trim());
+    const active = Boolean(provider.enabled && configured);
+    const privacy = active
+      ? 'Requests sent to ' + endpoint.host
+      : provider.enabled ? endpoint.message || 'Provider needs a model name · open Settings' : 'Local preview · no model request';
+    return { provider, endpoint, configured, active, privacy, label: active ? textValue(provider.model, 'Configured provider') : provider.enabled ? 'Provider setup needed' : 'Local preview' };
+  }
+
+  function runtimeChoices() {
+    const info = providerRuntimeInfo();
+    return [
+      { mode: 'local', name: 'Local preview', detail: 'Deterministic response · no model request', enabled: true, active: !info.active },
+      { mode: 'provider', name: textValue(info.provider.model, 'Configured provider') || 'Configured provider', detail: info.configured ? 'Prompts and context go to ' + info.endpoint.host : info.endpoint.message || 'Set a model name in Settings first', enabled: info.configured, active: info.active }
+    ];
+  }
+
+  function selectRuntime(mode) {
+    const info = providerRuntimeInfo();
+    if (mode === 'provider') {
+      if (!info.configured) {
+        showToast(info.endpoint.message || 'Add a model name in Settings before enabling the provider');
+        return false;
+      }
+      info.provider.enabled = true;
+      state.selectedModel = textValue(info.provider.model, 'Configured provider');
+      showToast('Configured provider active · requests go to ' + info.endpoint.host);
+    } else if (mode === 'local') {
+      info.provider.enabled = false;
+      state.selectedModel = 'Forge Local';
+      showToast('Local preview active · no model request');
+    } else return false;
+    setModelMenuOpen(false);
+    persist();
+    updateModelButton();
+    return true;
+  }
+
+  function setModelMenuOpen(open) {
+    const isOpen = Boolean(open);
+    modelMenu.classList.toggle('open', isOpen);
+    modelButton.setAttribute('aria-expanded', String(isOpen));
+  }
+
   function updateModelButton() {
+    const info = providerRuntimeInfo();
     modelButton.replaceChildren();
     const dot = document.createElement('span');
-    dot.className = 'status-dot';
-    const label = document.createTextNode(' ' + state.selectedModel + ' ');
+    dot.className = 'status-dot' + (info.active ? ' cloud' : '');
+    const shownLabel = info.label.length > 22 ? info.label.slice(0, 19) + '…' : info.label;
+    const label = document.createTextNode(' ' + shownLabel + ' ');
     const chevron = document.createElement('span');
     chevron.className = 'chevron';
     chevron.textContent = '⌄';
     modelButton.append(dot, label, chevron);
-    $$('.model-option').forEach((option) => {
-      const selected = option.querySelector('strong')?.textContent === state.selectedModel;
-      option.classList.toggle('chosen', selected);
-      const marker = option.lastElementChild;
-      if (marker) marker.textContent = selected ? '✓' : '';
+    modelButton.setAttribute('aria-haspopup', 'menu');
+    modelButton.setAttribute('aria-controls', 'modelMenu');
+    modelButton.setAttribute('aria-expanded', String(modelMenu.classList.contains('open')));
+    modelButton.setAttribute('aria-label', 'Active runtime: ' + info.label + '. ' + info.privacy);
+    modelButton.title = info.privacy;
+    const privacyNote = $('.privacy-note');
+    if (privacyNote) {
+      const privacyDot = document.createElement('span');
+      privacyDot.className = 'status-dot' + (info.active ? ' cloud' : '');
+      privacyNote.replaceChildren(privacyDot, document.createTextNode(info.privacy));
+    }
+    const onboardingCopy = $('.onboarding-card > p:not(.drawer-kicker)');
+    if (onboardingCopy) onboardingCopy.textContent = 'Workspace settings and drafts are stored locally. Enabling a model provider or MCP tool sends selected content to that endpoint.';
+
+    modelMenu.replaceChildren();
+    const heading = document.createElement('p');
+    heading.textContent = 'Choose a runtime';
+    modelMenu.appendChild(heading);
+    runtimeChoices().forEach((choice) => {
+      const option = document.createElement('button');
+      option.className = 'model-option' + (choice.active ? ' chosen' : '');
+      option.type = 'button';
+      option.setAttribute('role', 'menuitem');
+      option.dataset.runtimeMode = choice.mode;
+      option.disabled = !choice.enabled;
+      const optionDot = document.createElement('span');
+      optionDot.className = 'status-dot' + (choice.mode === 'provider' ? ' cloud' : '');
+      const copy = document.createElement('span');
+      const name = document.createElement('strong');
+      name.textContent = choice.name;
+      const description = document.createElement('small');
+      description.textContent = choice.detail;
+      copy.append(name, description);
+      const marker = document.createElement('span');
+      marker.textContent = choice.active ? '✓' : '';
+      option.append(optionDot, copy, marker);
+      option.addEventListener('click', () => selectRuntime(choice.mode));
+      modelMenu.appendChild(option);
     });
   }
 
@@ -1647,18 +1814,8 @@
 
   modelButton.addEventListener('click', (event) => {
     event.stopPropagation();
-    modelMenu.classList.toggle('open');
+    setModelMenuOpen(!modelMenu.classList.contains('open'));
   });
-
-  $$('.model-option').forEach((option) => option.addEventListener('click', () => {
-    const name = $('strong', option)?.textContent;
-    if (!name) return;
-    state.selectedModel = name;
-    updateModelButton();
-    modelMenu.classList.remove('open');
-    persist();
-    showToast(name + ' selected');
-  }));
 
   $$('.nav-item').forEach((item) => item.addEventListener('click', () => {
     $$('.nav-item').forEach((nav) => nav.classList.remove('active'));
@@ -1685,7 +1842,7 @@
   byId('searchResults')?.addEventListener('click', (event) => { const result = event.target.closest('[data-search-action]'); if (!result) return; const action = result.dataset.searchAction; closePalette(); if (action === 'thread') { const thread = state.threads.find((item) => item.id === result.dataset.searchId); if (thread) renderThread(thread); } else if (action === 'project') renderProjectDetail(projectById(result.dataset.searchId)); else if (action === 'assistants') renderAssistants(); else if (action === 'models') showWorkspace('Model hub'); else if (action === 'canvas') openCanvas(); });
 
   document.addEventListener('click', (event) => {
-    if (!event.target.closest('#modelButton') && !event.target.closest('#modelMenu')) modelMenu.classList.remove('open');
+    if (!event.target.closest('#modelButton') && !event.target.closest('#modelMenu')) setModelMenuOpen(false);
   });
 
   overlayBody.addEventListener('click', (event) => {
@@ -1722,7 +1879,7 @@
     if (event.key === 'Escape') {
       closePalette();
       closeOverlay();
-      modelMenu.classList.remove('open');
+      setModelMenuOpen(false);
       toggleContext(false);
     }
   });

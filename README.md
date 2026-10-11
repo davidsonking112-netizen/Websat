@@ -9,11 +9,11 @@ The prototype is functional in-browser:
 - Threads persist locally in the browser via `localStorage` and can be created, switched, searched, edited, regenerated, continued, and restored.
 - Local state is validated on load and guarded against malformed or unavailable browser storage.
 - Projects, Assistants, and Model Hub open real workspace views.
-- Canvas opens an editable work surface with local save, version history, restore, and export tools.
-- Composer interactions, model switching, keyboard shortcuts, context drawer, and local preview responses work without a server.
+- Canvas opens an editable work surface with local draft autosave, explicit version checkpoints, restore, and export tools. Its writing actions use the configured provider only when explicitly clicked; they never invoke MCP tools, and each successful rewrite keeps the prior draft as a restore point. Code export extracts a single fenced block with a matching file extension, while Markdown preserves full or multi-block drafts.
+- Composer interactions, runtime switching between deterministic local preview and a configured provider, keyboard shortcuts, and the context drawer work without a server. The active-runtime indicator identifies when prompts are sent to a configured endpoint.
 - Forge can connect to Ollama (`/api/chat`) or OpenAI-compatible chat-completions endpoints. Browser requests stream when the endpoint supports it; Electron uses buffered main-process requests to avoid renderer CORS restrictions, so desktop replies currently arrive as complete messages rather than progressive tokens.
 - Provider requests include the global system prompt, active assistant instructions, saved project instructions, recent thread history, and readable local attachment contents.
-- Provider endpoints, model names, and Bearer API keys are configurable in Settings. A blank key field preserves the saved key; key deletion is explicit. Electron stores keys with `safeStorage` and attaches them from the main process; browser mode stores them in local storage and the provider must permit browser CORS.
+- Provider endpoints, model names, and Bearer API keys are configurable in Settings. Remote endpoints must use HTTPS; HTTP is allowed only for loopback. When enabled, prompts, recent thread history, system/assistant/project instructions, and readable attachment text are sent to the configured endpoint. A blank key field preserves the saved key; key deletion is explicit. Electron stores keys with `safeStorage` and attaches them from the main process; browser mode stores them in local storage and the provider must permit browser CORS.
 - OpenAI-compatible and Ollama tool-call responses can invoke MCP tools, pass results back to the model, and continue to a final answer. Per-turn execution is bounded to 8 MCP calls and 6 model/tool rounds.
 - Attachments are now ingested locally: text/code files are read for context, images receive local previews, large text files are truncated safely, and attachment status is visible in the context drawer.
 - Voice input uses the browser Speech Recognition API when available and gives a clear permission/support fallback when it is not.
@@ -42,7 +42,7 @@ This is still a front-end prototype: it has no user authentication, server-side 
 
 ## Validation
 
-Validation covers Vitest source checks, Playwright browser regressions for provider authentication/system prompts, Ollama streaming, MCP tool execution and discovery pagination, the production build, and Electron main/preload syntax checks.
+Validation covers Vitest source checks, Playwright browser regressions for provider authentication/system prompts, Canvas autosave/provider-backed edits/code export, runtime privacy disclosure, Ollama streaming, MCP tool execution and discovery pagination, the production build, and Electron main/preload syntax checks. GitHub Actions installs Chromium and runs the browser suite on pushes and pull requests.
 
 ### Forge research demo
 
@@ -51,7 +51,7 @@ Run `npm run dev -- --host 0.0.0.0` and open `/?forgeDemo=all` to load a reprodu
 
 ## Production foundation
 
-Websat now has a Vite build/dev workflow, automated source smoke tests with Vitest, a Playwright keyboard/console smoke test, local appearance/onboarding settings, custom assistants, guarded MCP/tool connections, and real provider integration.
+Websat now has a Vite build/dev workflow, Vitest source tests, a full Playwright browser regression suite in CI, local appearance/onboarding settings, custom assistants, guarded MCP/tool connections, provider-backed Canvas writing tools, and real provider integration.
 
 Windows packaging is configured with Electron + electron-builder:
 

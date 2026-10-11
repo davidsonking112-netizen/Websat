@@ -9,6 +9,8 @@ async function seedWorkspace(page, threads, overrides = {}) {
     threads,
     activeId: threads[0].id,
     settings: { theme: 'light', onboardingComplete: true, ...(overrides.settings || {}) },
+    ...(typeof overrides.canvas === 'string' ? { canvas: overrides.canvas } : {}),
+    ...(Array.isArray(overrides.canvasHistory) ? { canvasHistory: overrides.canvasHistory } : {}),
     ...(overrides.assistants ? { assistants: overrides.assistants } : {}),
     ...(overrides.selectedAssistant ? { selectedAssistant: overrides.selectedAssistant } : {}),
     ...(overrides.toolConnections ? { toolConnections: overrides.toolConnections } : {})
@@ -32,6 +34,8 @@ test('core page is keyboard reachable and has no obvious console errors', async 
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto('/');
   await expect(page.getByRole('button', { name: /new thread/i })).toBeVisible();
+  await expect(page.locator('.onboarding-card .drawer-kicker')).toHaveText('WELCOME TO FORGE');
+  await expect(page.locator('.onboarding-card > p:not(.drawer-kicker)')).toContainText('Enabling a model provider or MCP tool sends selected content');
   await page.getByRole('button', { name: /new thread/i }).focus();
   await expect(page.getByRole('button', { name: /new thread/i })).toBeFocused();
   expect(errors).toEqual([]);
@@ -251,6 +255,115 @@ test('default MCP confirmation prevents execution when the user declines', async
   expect(dialogs[0]).toContain('private data');
   expect(mcpHits).toBe(0);
   expect(modelBodies[1].messages.some((message) => message.role === 'tool' && message.content.includes('declined'))).toBe(true);
+});
+
+test('Canvas drafts autosave locally when closed without creating a version', async ({ page }) => {
+  await seedWorkspace(page, [blankThread('canvas-autosave')], { canvas: 'Existing draft' });
+  await page.locator('#canvasMode').click();
+  await page.locator('#canvasText').fill('A draft that should survive closing the Canvas.');
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).canvas, storageKey)).toBe('A draft that should survive closing the Canvas.');
+  await page.locator('#closeOverlay').click();
+  await page.locator('#canvasMode').click();
+  await expect(page.locator('#canvasText')).toHaveValue('A draft that should survive closing the Canvas.');
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).canvasHistory.length, storageKey)).toBe(0);
+});
+
+test('Canvas writing tools use the configured provider and autosave its real output', async ({ page }) => {
+  let observed;
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    observed = { headers: route.request().headers(), body: JSON.parse(route.request().postData() || '{}') };
+    return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'A clearer, polished draft.' } }] }) });
+  });
+  await seedWorkspace(page, [blankThread('canvas-provider')], {
+    canvas: 'Original draft text.',
+    settings: {
+      systemPrompt: 'Preserve the writer’s factual meaning.',
+      provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-canvas-test', model: 'canvas-test-model', enabled: true }
+    }
+  });
+  await page.locator('#canvasMode').click();
+  await page.locator('[data-canvas-tool="polish"]').click();
+  await expect(page.locator('#canvasText')).toHaveValue('A clearer, polished draft.');
+  expect(observed.headers.authorization).toBe('Bearer sk-canvas-test');
+  expect(JSON.stringify(observed.body.messages)).toContain('Original draft text.');
+  expect(JSON.stringify(observed.body.messages)).toContain('Preserve the writer’s factual meaning.');
+  expect(observed.body.tools).toBeUndefined();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).canvas, storageKey)).toBe('A clearer, polished draft.');
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).canvasHistory[0].content, storageKey)).toBe('Original draft text.');
+  await expect(page.locator('#restoreCanvas')).toBeEnabled();
+  await page.locator('#restoreCanvas').click();
+  await expect(page.locator('#canvasText')).toHaveValue('Original draft text.');
+});
+
+test('Canvas writing tools do not fake edits when no real provider is enabled', async ({ page }) => {
+  await seedWorkspace(page, [blankThread('canvas-local')], { canvas: 'Keep this text unchanged.' });
+  await page.locator('#canvasMode').click();
+  await page.locator('[data-canvas-tool="shorter"]').click();
+  await expect(page.locator('#canvasText')).toHaveValue('Keep this text unchanged.');
+  await expect(page.locator('#toast')).toContainText('Enable a model provider');
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).canvas, storageKey)).toBe('Keep this text unchanged.');
+});
+
+test('Canvas code export extracts a single fenced block and chooses its extension', async ({ page }) => {
+  await seedWorkspace(page, [blankThread('canvas-code')]);
+  await page.locator('#canvasMode').click();
+  await page.locator('#canvasText').fill('Example:\n\n```html\n<div>hello</div>\n```');
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('#exportCode').click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe('forge-canvas.html');
+  const downloadPath = await download.path();
+  expect(downloadPath).toBeTruthy();
+  const { readFile } = await import('node:fs/promises');
+  expect(await readFile(downloadPath, 'utf8')).toBe('<div>hello</div>');
+});
+
+test('Settings refuse to enable a non-HTTPS remote model endpoint', async ({ page }) => {
+  await seedWorkspace(page, [blankThread('provider-url-policy')]);
+  await page.locator('#settingsButton').click();
+  await page.locator('#providerEnabled').check();
+  await page.locator('#providerBaseUrl').fill('http://provider.test/v1');
+  await page.locator('#providerModel').fill('unsafe-test-model');
+  await page.locator('#saveSettings').click();
+  await expect(page.locator('#toast')).toContainText('Use HTTPS for remote providers');
+  await expect.poll(() => page.evaluate((key) => Boolean(JSON.parse(localStorage.getItem(key)).settings.provider?.enabled), storageKey)).toBe(false);
+  await expect(page.locator('#workspaceOverlay')).toHaveClass(/open/);
+});
+
+test('legacy insecure enabled provider settings are normalized to local preview', async ({ page }) => {
+  let providerHits = 0;
+  page.on('request', (request) => { if (request.url().includes('provider.test')) providerHits += 1; });
+  await seedWorkspace(page, [blankThread('legacy-provider-url')], {
+    settings: { provider: { kind: 'openai', baseUrl: 'http://provider.test/v1', apiKey: 'sk-legacy-test', model: 'legacy-model', enabled: true } }
+  });
+  await expect(page.locator('#modelButton')).toContainText('Local preview');
+  await page.locator('#prompt').fill('A harmless local preview request.');
+  await page.locator('#sendButton').click();
+  await expect(page.locator('#conversation')).toContainText('Using Forge Local: Be clear, careful, concise, and action-oriented.');
+  expect(providerHits).toBe(0);
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).settings.provider.enabled, storageKey)).toBe(false);
+});
+
+test('runtime selector switches real state and discloses the configured provider destination', async ({ page }) => {
+  await seedWorkspace(page, [blankThread('runtime-switch')], {
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: '', model: 'runtime-test-model', enabled: true } }
+  });
+  await expect(page.locator('#modelButton')).toContainText('runtime-test-model');
+  await expect(page.locator('.privacy-note')).toContainText('Requests sent to provider.test');
+  await expect(page.locator('#modelButton')).toHaveAttribute('aria-expanded', 'false');
+  await page.locator('#modelButton').click();
+  await expect(page.locator('#modelButton')).toHaveAttribute('aria-expanded', 'true');
+  await page.locator('#modelMenu [data-runtime-mode="local"]').click();
+  await expect(page.locator('#modelButton')).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('#modelButton')).toContainText('Local preview');
+  await expect(page.locator('.privacy-note')).toContainText('no model request');
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).settings.provider.enabled, storageKey)).toBe(false);
+
+  await page.locator('#modelButton').click();
+  await expect(page.locator('#modelMenu [data-runtime-mode="provider"]')).toContainText('Prompts and context go to provider.test');
+  await page.locator('#modelMenu [data-runtime-mode="provider"]').click();
+  await expect(page.locator('#modelButton')).toContainText('runtime-test-model');
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).settings.provider.enabled, storageKey)).toBe(true);
 });
 
 test('MCP discovery initializes the connection and follows tool-list pagination', async ({ page }) => {

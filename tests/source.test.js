@@ -66,6 +66,17 @@ describe('Websat production smoke checks', () => {
     expect(js).toContain('systemPrompt');
   });
 
+  test('Canvas editing, export, and runtime status reflect real behavior', () => {
+    const js = read('app.js');
+    expect(js).toContain('async function runCanvasTool(');
+    expect(js).toContain('requestModel(messages, provider, false)');
+    expect(js).toContain('Draft autosaved locally');
+    expect(js).toContain('matchAll(/```([a-z0-9_+.-]*)');
+    expect(js).toContain('function providerRuntimeInfo()');
+    expect(js).toContain('Requests sent to ');
+    expect(js).not.toContain('Deeper thinking · local');
+  });
+
   test('desktop bridge keeps secrets and native capabilities out of the renderer', () => {
     const main = read('electron/main.cjs');
     const preload = read('electron/preload.cjs');
