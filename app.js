@@ -1031,12 +1031,16 @@
       return { content, toolCalls };
     }
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120000);
+    const requestedTimeout = Number(provider.requestTimeoutMs);
+    const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout >= 250
+      ? Math.min(120000, Math.floor(requestedTimeout))
+      : 120000;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       let response;
       try { response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal }); }
       catch (error) {
-        if (error?.name === 'AbortError') throw new Error('Provider request timed out after 120 seconds');
+        if (error?.name === 'AbortError') throw new Error('Provider request timed out after ' + Math.round(timeoutMs / 1000) + ' seconds');
         throw new Error('Could not reach provider. Check the URL, network, CORS, and API key (' + (error?.message || 'network error') + ')');
       }
       if (!response.ok) throw new Error('Model HTTP ' + response.status + ' · ' + (await response.text()).slice(0, 300));
@@ -1098,6 +1102,9 @@
         function: { ...call.function, arguments: call.function.arguments || '{}' }
       }));
       return { content: output, toolCalls };
+    } catch (error) {
+      if (error?.name === 'AbortError') throw new Error('Provider request timed out after ' + Math.round(timeoutMs / 1000) + ' seconds');
+      throw error;
     } finally { clearTimeout(timeout); }
   }
 
@@ -1758,6 +1765,7 @@
     task.status = 'running'; task.lastError = ''; task.runCount = (task.runCount || 0) + 1;
     agentLog(task, 'info', 'Run ' + task.runCount + ' started · max ' + MAX_PARALLEL_STEPS + ' parallel steps.');
     persist();
+    if (overlay.classList.contains('open')) renderAgents();
     let activeWave = [];
     try {
       const completedIds = () => new Set(task.steps.filter((step) => step.status === 'completed').map((step) => step.id));
