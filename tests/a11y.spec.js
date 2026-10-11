@@ -13,7 +13,8 @@ async function seedWorkspace(page, threads, overrides = {}) {
     ...(Array.isArray(overrides.canvasHistory) ? { canvasHistory: overrides.canvasHistory } : {}),
     ...(overrides.assistants ? { assistants: overrides.assistants } : {}),
     ...(overrides.selectedAssistant ? { selectedAssistant: overrides.selectedAssistant } : {}),
-    ...(overrides.toolConnections ? { toolConnections: overrides.toolConnections } : {})
+    ...(overrides.toolConnections ? { toolConnections: overrides.toolConnections } : {}),
+    ...(Array.isArray(overrides.agentTasks) ? { agentTasks: overrides.agentTasks } : {})
   };
   await page.addInitScript(({ key, state }) => {
     localStorage.setItem(key, JSON.stringify(state));
@@ -405,4 +406,40 @@ test('MCP discovery initializes the connection and follows tool-list pagination'
   expect(methods[3].cursor).toBe('page-two');
   expect(methods[1].protocolVersion).toBe('2025-03-26');
   expect(methods[2].protocolVersion).toBe('2025-03-26');
+});
+
+
+test('Forge agent console binds duplicate, export, and browser actions without runtime errors', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  const task = {
+    id: 'agent-smoke-task',
+    title: 'Agent smoke task',
+    prompt: 'Summarize a short test topic',
+    status: 'completed',
+    steps: [{ id: 'agent-smoke-step', title: 'Produce result', kind: 'work', status: 'completed', result: 'Smoke-test result', dependsOn: [], compute: null }],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    schedule: { enabled: false, intervalMinutes: 60, nextRunAt: '' },
+    lastError: '',
+    result: 'Smoke-test result',
+    runCount: 1,
+    logs: []
+  };
+  await seedWorkspace(page, [blankThread('agent-smoke-thread')], { agentTasks: [task] });
+  await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
+  await expect(page.locator('.agent-task-card')).toHaveCount(1);
+  await expect(page.locator('.agent-task-card').first()).toContainText('Smoke-test result');
+  expect(errors).toEqual([]);
+
+  await page.locator('.agent-task-card').first().getByRole('button', { name: 'Duplicate' }).click();
+  await expect(page.locator('.agent-task-card')).toHaveCount(2);
+  await expect(page.locator('.agent-task-card').first()).toContainText('Copy: Agent smoke task');
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks.length, storageKey)).toBe(2);
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('.agent-task-card').first().getByRole('button', { name: 'Export report' }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toContain('.json');
+  expect(errors).toEqual([]);
 });
