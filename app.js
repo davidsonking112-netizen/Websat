@@ -1526,7 +1526,7 @@
     const system = 'You are Forge task planner. Return only valid JSON: {"steps":[{"title":"...","kind":"plan|research|browser|work|review"}]}. Produce 3–6 small, ordered, independently verifiable steps. Include exactly one initial plan step and one final review step. Use research for evidence gathering, browser only when web/search tools are needed, and work for creating or changing an artifact. Do not claim tools are available. Titles must be concise and actionable.';
     try {
       const raw = await requestModel([{ role: 'system', content: system }, { role: 'user', content: 'Task to plan:\n' + prompt }], state.settings.provider, true);
-      const jsonText = String(raw || '').replace(/^\\s*\x60\x60\x60(?:json)?\\s*/i, '').replace(/\\s*\x60\x60\x60\\s*$/, '').trim();
+      const jsonText = String(raw || '').replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
       const parsed = JSON.parse(jsonText);
       const supplied = Array.isArray(parsed) ? parsed : parsed?.steps;
       if (!Array.isArray(supplied)) throw new Error('Planner response did not contain a steps array');
