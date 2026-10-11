@@ -151,3 +151,16 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .formula-inline { display: inline-flex; margin: 0 3px; padding: 2px 7px; vertical-align: baseline; border-left-width: 2px; }
 .formula-inline .formula-label { display: none; }
 @media (max-width: 620px) { .code-line { grid-template-columns: 29px minmax(0, 1fr); } .line-no { padding-right: 7px; } .formula-block { align-items: flex-start; flex-direction: column; gap: 4px; } }
+
+/* Agent runtime: result visibility, execution provenance, and safe pause semantics. */
+.agent-task-result { margin: 10px 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background: color-mix(in srgb, var(--card) 78%, var(--green) 22%); }
+.agent-task-result strong { display: block; color: var(--ink); font-size: 11px; margin-bottom: 5px; }
+.agent-task-result p { color: var(--ink-soft); font-size: 11px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+.agent-task-error { color: #ae4e48; background: color-mix(in srgb, var(--card) 84%, #f2b6ae 16%); border-radius: 8px; padding: 9px 10px; font-size: 11px; line-height: 1.45; }
+.agent-run-log { margin: 10px 0; border-top: 1px solid var(--line); padding-top: 9px; }
+.agent-run-log summary { color: var(--muted); cursor: pointer; font-size: 10px; }
+.agent-run-log ol { display: grid; gap: 7px; max-height: 220px; overflow: auto; padding: 9px 0 0; margin: 0; list-style: none; }
+.agent-run-log li { display: grid; gap: 3px; border-left: 2px solid var(--line); padding: 3px 8px; font-size: 10px; line-height: 1.45; color: var(--ink-soft); overflow-wrap: anywhere; }
+.agent-run-log li.warning { border-left-color: #d29b54; }
+.agent-run-log li.error { border-left-color: #c95b52; }
+.agent-run-log time { color: var(--muted); font-size: 9px; }
