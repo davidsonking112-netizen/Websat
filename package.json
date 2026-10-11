@@ -11,7 +11,7 @@
     "test:watch": "vitest",
     "test:a11y": "playwright test",
     "desktop:dev": "electron .",
-    "desktop:build": "electron-builder --win"
+    "desktop:build": "electron-builder --win --publish never"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
