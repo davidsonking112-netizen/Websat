@@ -195,5 +195,11 @@ describe('Websat production smoke checks', () => {
     expect(js).toContain('Pause reached after the in-flight request; this step remains resumable.');
     expect(js).toContain('Adaptive compute: ');
     expect(html).toContain('Agents');
+    expect(js).toContain('function exportAgentTaskReport(task)');
+    expect(js).toContain('schemaVersion: 1');
+    expect(js).toContain('function duplicateAgentTask(task)');
+    expect(js).toContain('schedule: { enabled: false');
+    expect(js).toContain('data-agent-duplicate=');
+    expect(js).toContain('data-agent-export=');
   });
 });
