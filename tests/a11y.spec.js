@@ -660,3 +660,71 @@ test('Forge streaming provider timeout cancels a stalled response and records a 
   expect(task.lastError).toContain('Provider request timed out');
   expect(task.steps.some((step) => step.status === 'failed')).toBe(true);
 });
+
+
+test('Forge cancellation stops at a safe checkpoint and leaves unfinished work resumable', async ({ page }) => {
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    if (body.stream === false) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: JSON.stringify({ steps: [
+        { title: 'Plan cancel flow', kind: 'plan', dependsOn: [] },
+        { title: 'Execute cancellable work', kind: 'work', dependsOn: [0] },
+        { title: 'Review resumed work', kind: 'review', dependsOn: [1] }
+      ] }) } }] }) });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    try {
+      return await route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Cancellable work result.' } }] }) });
+    } catch (_) {}
+  });
+  await seedWorkspace(page, [blankThread('agent-cancel')], {
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-test', model: 'mock-agent-model', enabled: true } }
+  });
+  await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
+  await page.locator('#agentPrompt').fill('Cancel then resume safely');
+  await page.locator('#createAgentTask').click();
+  await expect(page.locator('[data-agent-cancel]')).toBeVisible();
+  await page.locator('[data-agent-cancel]').click();
+  await expect.poll(() => page.evaluate((key) => {
+    const task = JSON.parse(localStorage.getItem(key)).agentTasks[0];
+    return task?.status === 'cancelled' && task.steps.every((step) => step.status !== 'running');
+  }, storageKey), { timeout: 10000 }).toBe(true);
+  const cancelled = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
+  expect(cancelled.steps.some((step) => step.status === 'queued')).toBe(true);
+  expect(cancelled.logs.some((entry) => entry.message.includes('Cancellation reached'))).toBe(true);
+  await page.locator('[data-agent-run]').click();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
+  const resumed = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
+  expect(resumed.runCount).toBe(2);
+});
+
+test('Forge recovers an interrupted running task from persisted state after a page restart', async ({ page }) => {
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    expect(body.stream).toBe(true);
+    return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Recovered after restart.' } }] }) });
+  });
+  await seedWorkspace(page, [blankThread('agent-restart')], {
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-test', model: 'mock-agent-model', enabled: true } }
+  });
+  await page.evaluate((key) => {
+    const saved = JSON.parse(localStorage.getItem(key));
+    saved.agentTasks = [{
+      id: 'restart-task', title: 'Restart recovery', prompt: 'Recover after app restart', status: 'running',
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), runCount: 4, result: '', lastError: '',
+      schedule: { enabled: false, intervalMinutes: 60, nextRunAt: '' }, logs: [],
+      steps: [
+        { id: 'restart-plan', title: 'Recover the plan', kind: 'plan', status: 'running', result: '', dependsOn: [] },
+        { id: 'restart-work', title: 'Recover the work', kind: 'work', status: 'queued', result: '', dependsOn: ['restart-plan'] },
+        { id: 'restart-review', title: 'Review recovered work', kind: 'review', status: 'queued', result: '', dependsOn: ['restart-work'] }
+      ]
+    }];
+    localStorage.setItem(key, JSON.stringify(saved));
+  }, storageKey);
+  await page.reload();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
+  const recovered = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
+  expect(recovered.runCount).toBe(5);
+  expect(recovered.steps.every((step) => step.status === 'completed')).toBe(true);
+  expect(recovered.logs.some((entry) => entry.message.includes('Run 5 started'))).toBe(true);
+});
