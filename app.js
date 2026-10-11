@@ -98,7 +98,7 @@
       id: textValue(task.id, makeId('agent-task')),
       title: textValue(task.title, 'Untitled agent task').slice(0, 160),
       prompt: textValue(task.prompt).slice(0, 4000),
-      status: ['queued', 'running', 'completed', 'paused', 'blocked', 'failed'].includes(task.status) ? task.status : 'queued',
+      status: ['queued', 'running', 'completed', 'paused', 'cancelled', 'blocked', 'failed'].includes(task.status) ? task.status : 'queued',
       steps,
       createdAt: textValue(task.createdAt),
       updatedAt: textValue(task.updatedAt),
@@ -218,6 +218,7 @@
           baseUrl: textValue(raw.settings?.provider?.baseUrl).trim().replace(/\/$/, '').slice(0, 500),
           apiKey: textValue(raw.settings?.provider?.apiKey).slice(0, 500),
           model: textValue(raw.settings?.provider?.model, 'gpt-4o-mini').slice(0, 120),
+          requestTimeoutMs: Math.max(250, Math.min(120000, Math.floor(Number(raw.settings?.provider?.requestTimeoutMs) || 120000))),
           enabled: Boolean(raw.settings?.provider?.enabled && providerUrlInfo(textValue(raw.settings?.provider?.baseUrl).trim().replace(/\/$/, '')).allowed)
         }
       }
@@ -1031,12 +1032,16 @@
       return { content, toolCalls };
     }
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120000);
+    const requestedTimeout = Number(provider.requestTimeoutMs);
+    const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout >= 250
+      ? Math.min(120000, Math.floor(requestedTimeout))
+      : 120000;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       let response;
       try { response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal }); }
       catch (error) {
-        if (error?.name === 'AbortError') throw new Error('Provider request timed out after 120 seconds');
+        if (error?.name === 'AbortError') throw new Error('Provider request timed out after ' + Math.ceil(timeoutMs / 1000) + ' seconds');
         throw new Error('Could not reach provider. Check the URL, network, CORS, and API key (' + (error?.message || 'network error') + ')');
       }
       if (!response.ok) throw new Error('Model HTTP ' + response.status + ' · ' + (await response.text()).slice(0, 300));
@@ -1098,6 +1103,9 @@
         function: { ...call.function, arguments: call.function.arguments || '{}' }
       }));
       return { content: output, toolCalls };
+    } catch (error) {
+      if (error?.name === 'AbortError') throw new Error('Provider request timed out after ' + Math.ceil(timeoutMs / 1000) + ' seconds');
+      throw error;
     } finally { clearTimeout(timeout); }
   }
 
@@ -1671,7 +1679,7 @@
   }
   function renderAgents() {
     const tasks = state.agentTasks || [];
-    const cards = tasks.length ? tasks.map((task) => '<article class="agent-task-card"><div class="agent-task-head"><div><strong>' + escapeHtml(task.title) + '</strong><small>' + escapeHtml(agentTaskSummary(task)) + '</small></div><span class="agent-status ' + escapeAttribute(task.status) + '">' + escapeHtml(task.status) + '</span></div><p class="agent-task-prompt">' + escapeHtml(task.prompt) + '</p>' + (task.result ? '<div class="agent-task-result"><strong>Latest result</strong><p>' + escapeHtml(task.result.slice(0, 1600)) + '</p></div>' : '') + (task.lastError ? '<p class="agent-task-error">' + escapeHtml(task.lastError) + '</p>' : '') + '<ol class="agent-step-list">' + task.steps.map((step) => '<li class="agent-step ' + escapeAttribute(step.status) + '"><span class="agent-step-mark">' + (step.status === 'completed' ? '✓' : step.status === 'running' ? '…' : step.status === 'blocked' ? '!' : '○') + '</span><span><strong>' + escapeHtml(step.title) + '</strong>' + (step.dependsOn?.length ? '<small>Depends on ' + escapeHtml(step.dependsOn.length + ' prerequisite(s)') + '</small>' : '<small>Independent / root step</small>') + (step.compute ? '<small>Adaptive compute: ' + step.compute.extraPasses + ' extra pass(es) · confidence ' + step.compute.confidence.toFixed(2) + '</small>' : '') + (step.result ? '<small>' + escapeHtml(step.result.slice(0, 240)) + '</small>' : '') + '</span></li>').join('') + '</ol>' + (task.logs?.length ? '<details class="agent-run-log"><summary>Execution log · ' + task.logs.length + ' events</summary><ol>' + task.logs.slice().reverse().slice(0, 20).map((entry) => '<li class="' + escapeAttribute(entry.level) + '"><time>' + escapeHtml(entry.at ? new Date(entry.at).toLocaleString() : '') + '</time><span>' + escapeHtml(entry.message) + '</span></li>').join('') + '</ol></details>' : '') + '<div class="agent-task-actions">' + ((task.status === 'queued' || task.status === 'paused' || task.status === 'blocked' || task.status === 'failed') ? '<button class="overlay-action" data-agent-run="' + escapeAttribute(task.id) + '" type="button">Run / resume</button>' : '') + (task.status === 'running' ? '<button class="overlay-action" data-agent-pause="' + escapeAttribute(task.id) + '" type="button">Pause</button>' : '') + '<button class="overlay-action" data-agent-duplicate="' + escapeAttribute(task.id) + '" type="button">Duplicate</button><button class="overlay-action" data-agent-export="' + escapeAttribute(task.id) + '" type="button">Export report</button><button class="overlay-action" data-agent-browser="' + escapeAttribute(task.id) + '" type="button">Open research browser</button></div></article>').join('') : '<div class="empty-overlay"><strong>No agent tasks yet.</strong><small>Create a task to see its decomposed steps here.</small></div>';
+    const cards = tasks.length ? tasks.map((task) => '<article class="agent-task-card"><div class="agent-task-head"><div><strong>' + escapeHtml(task.title) + '</strong><small>' + escapeHtml(agentTaskSummary(task)) + '</small></div><span class="agent-status ' + escapeAttribute(task.status) + '">' + escapeHtml(task.status) + '</span></div><p class="agent-task-prompt">' + escapeHtml(task.prompt) + '</p>' + (task.result ? '<div class="agent-task-result"><strong>Latest result</strong><p>' + escapeHtml(task.result.slice(0, 1600)) + '</p></div>' : '') + (task.lastError ? '<p class="agent-task-error">' + escapeHtml(task.lastError) + '</p>' : '') + '<ol class="agent-step-list">' + task.steps.map((step) => '<li class="agent-step ' + escapeAttribute(step.status) + '"><span class="agent-step-mark">' + (step.status === 'completed' ? '✓' : step.status === 'running' ? '…' : step.status === 'blocked' ? '!' : '○') + '</span><span><strong>' + escapeHtml(step.title) + '</strong>' + (step.dependsOn?.length ? '<small>Depends on ' + escapeHtml(step.dependsOn.length + ' prerequisite(s)') + '</small>' : '<small>Independent / root step</small>') + (step.compute ? '<small>Adaptive compute: ' + step.compute.extraPasses + ' extra pass(es) · confidence ' + step.compute.confidence.toFixed(2) + '</small>' : '') + (step.result ? '<small>' + escapeHtml(step.result.slice(0, 240)) + '</small>' : '') + '</span></li>').join('') + '</ol>' + (task.logs?.length ? '<details class="agent-run-log"><summary>Execution log · ' + task.logs.length + ' events</summary><ol>' + task.logs.slice().reverse().slice(0, 20).map((entry) => '<li class="' + escapeAttribute(entry.level) + '"><time>' + escapeHtml(entry.at ? new Date(entry.at).toLocaleString() : '') + '</time><span>' + escapeHtml(entry.message) + '</span></li>').join('') + '</ol></details>' : '') + '<div class="agent-task-actions">' + ((task.status === 'queued' || task.status === 'paused' || task.status === 'cancelled' || task.status === 'blocked' || task.status === 'failed') ? '<button class="overlay-action" data-agent-run="' + escapeAttribute(task.id) + '" type="button">Run / resume</button>' : '') + (task.status === 'running' ? '<button class="overlay-action" data-agent-pause="' + escapeAttribute(task.id) + '" type="button">Pause</button><button class="overlay-action" data-agent-cancel="' + escapeAttribute(task.id) + '" type="button">Cancel run</button>' : '') + '<button class="overlay-action" data-agent-duplicate="' + escapeAttribute(task.id) + '" type="button">Duplicate</button><button class="overlay-action" data-agent-export="' + escapeAttribute(task.id) + '" type="button">Export report</button><button class="overlay-action" data-agent-browser="' + escapeAttribute(task.id) + '" type="button">Open research browser</button></div></article>').join('') : '<div class="empty-overlay"><strong>No agent tasks yet.</strong><small>Create a task to see its decomposed steps here.</small></div>';
     openOverlay('Agents', 'LOCAL AGENT CONSOLE', '<div class="agent-console"><p class="settings-copy">Forge plans dependency-aware work, runs up to 3 independent steps in parallel and up to 3 tasks concurrently, and allocates extra inference passes when a result needs more scrutiny. Scheduled work resumes while Forge is open. Connect a live model and approved MCP/browser tools for real research actions.</p><section class="agent-create"><label><strong>New task</strong><textarea id="agentPrompt" rows="3" maxlength="4000" placeholder="Research a topic, compare sources, and draft a concise answer…"></textarea></label><label class="agent-schedule-toggle"><input id="agentSchedule" type="checkbox" /> Repeat while Forge is open</label><label class="agent-interval">Every <input id="agentInterval" type="number" min="15" max="10080" value="60" /> minutes</label><button class="canvas-save" id="createAgentTask" type="button">Plan task</button></section><section><div class="assistant-toolbar"><strong>Task queue</strong><span>' + tasks.length + ' saved</span></div>' + cards + '</section><p class="settings-copy agent-boundary">Background execution is resumable local work, not an always-on server worker. Closing the browser pauses execution; the next open resumes saved steps.</p></div>');
     byId('createAgentTask').addEventListener('click', async () => {
       const prompt = byId('agentPrompt').value.trim();
@@ -1692,6 +1700,7 @@
     });
     $$('[data-agent-run]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentRun); if (task) runAgentTask(task); }));
     $$('[data-agent-pause]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentPause); if (task) { task.status = 'paused'; agentLog(task, 'warning', 'Pause requested; the current model/tool request will finish before the next safe checkpoint.'); persist(); renderAgents(); showToast('Pause requested · waiting for the current step to reach a safe checkpoint'); } }));
+    $$('[data-agent-cancel]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentCancel); if (task) { task.status = 'cancelled'; agentLog(task, 'warning', 'Cancellation requested; in-flight requests will finish before execution stops. Unfinished steps remain resumable.'); persist(); renderAgents(); showToast('Cancellation requested · stopping at the next safe checkpoint'); } }));
     $$('[data-agent-duplicate]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentDuplicate); if (task) duplicateAgentTask(task); }));
     $$('[data-agent-export]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentExport); if (task) exportAgentTaskReport(task); }));
     $$('[data-agent-browser]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentBrowser); if (task) window.open('https://www.google.com/search?q=' + encodeURIComponent(task.prompt), '_blank', 'noopener,noreferrer'); }));
@@ -1726,6 +1735,11 @@
     step.result = await adaptiveAgentTurn(task, step, [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], state.settings.provider, selectedAssistant(), (status) => {
       if (task.status === 'running') { step.statusMessage = status; task.updatedAt = new Date().toISOString(); persist(); }
     });
+    if (task.status === 'cancelled') {
+      step.status = 'queued';
+      agentLog(task, 'warning', 'Cancellation reached after the in-flight request; this step remains resumable.', step.id);
+      return 'cancelled';
+    }
     if (task.status === 'paused') {
       step.status = 'queued';
       agentLog(task, 'warning', 'Pause reached after the in-flight request; this step remains resumable.', step.id);
@@ -1758,11 +1772,12 @@
     task.status = 'running'; task.lastError = ''; task.runCount = (task.runCount || 0) + 1;
     agentLog(task, 'info', 'Run ' + task.runCount + ' started · max ' + MAX_PARALLEL_STEPS + ' parallel steps.');
     persist();
+    if (overlay.classList.contains('open')) renderAgents();
     let activeWave = [];
     try {
       const completedIds = () => new Set(task.steps.filter((step) => step.status === 'completed').map((step) => step.id));
       while (true) {
-        if (task.status === 'paused') break;
+        if (task.status === 'paused' || task.status === 'cancelled') break;
         const done = completedIds();
         const blocked = task.steps.filter((step) => step.status === 'blocked' || step.status === 'failed');
         if (blocked.length) { task.status = blocked.some((step) => step.status === 'failed') ? 'failed' : 'blocked'; break; }

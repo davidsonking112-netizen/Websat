@@ -13,7 +13,8 @@ async function seedWorkspace(page, threads, overrides = {}) {
     ...(Array.isArray(overrides.canvasHistory) ? { canvasHistory: overrides.canvasHistory } : {}),
     ...(overrides.assistants ? { assistants: overrides.assistants } : {}),
     ...(overrides.selectedAssistant ? { selectedAssistant: overrides.selectedAssistant } : {}),
-    ...(overrides.toolConnections ? { toolConnections: overrides.toolConnections } : {})
+    ...(overrides.toolConnections ? { toolConnections: overrides.toolConnections } : {}),
+    ...(Array.isArray(overrides.agentTasks) ? { agentTasks: overrides.agentTasks } : {})
   };
   await page.addInitScript(({ key, state }) => {
     localStorage.setItem(key, JSON.stringify(state));
@@ -444,14 +445,14 @@ test('Forge agent workflow completes, duplicates safely, exports a report, and h
   await page.locator('#createAgentTask').click();
 
   await expect(page.locator('.agent-task-card')).toHaveCount(1);
-  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey)).toBe('completed');
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey)).toBe('completed');
   await expect(page.locator('.agent-task-result')).toContainText('Greeting result: Hello from Forge.');
   expect(calls.filter((body) => body.stream === false)).toHaveLength(1);
   expect(calls.filter((body) => body.stream === true)).toHaveLength(3);
 
   await page.locator('[data-agent-duplicate]').first().click();
   await expect(page.locator('.agent-task-card')).toHaveCount(2);
-  const copied = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
+  const copied = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
   expect(copied.status).toBe('queued');
   expect(copied.runCount).toBe(0);
   expect(copied.schedule.enabled).toBe(false);
@@ -470,4 +471,256 @@ test('Forge agent workflow completes, duplicates safely, exports a report, and h
   expect(report.task.steps[0].status).toBe('queued');
 
   expect(errors).toEqual([]);
+});
+
+
+test('Forge runs independent steps concurrently but waits for their dependencies', async ({ page }) => {
+  let active = 0;
+  let peak = 0;
+  const starts = [];
+  const completions = [];
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    const user = body.messages?.find((message) => message.role === 'user')?.content || '';
+    if (body.stream === false) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: JSON.stringify({ steps: [
+        { title: 'Plan dependencies', kind: 'plan', dependsOn: [] },
+        { title: 'Independent work A', kind: 'work', dependsOn: [0] },
+        { title: 'Independent work B', kind: 'work', dependsOn: [0] },
+        { title: 'Independent work C', kind: 'work', dependsOn: [0] },
+        { title: 'Independent work D', kind: 'work', dependsOn: [0] },
+        { title: 'Review all results', kind: 'review', dependsOn: [1, 2, 3, 4] }
+      ] }) } }] }) });
+    }
+    const title = user.match(/Current step: ([^\n]+)/)?.[1] || 'unknown';
+    active += 1; peak = Math.max(peak, active); starts.push(title);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    active -= 1; completions.push(title);
+    return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Completed ' + title } }] }) });
+  });
+  await seedWorkspace(page, [blankThread('agent-parallel')], {
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-test', model: 'mock-agent-model', enabled: true } }
+  });
+  await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
+  await page.locator('#agentPrompt').fill('Test parallel dependency execution');
+  await page.locator('#createAgentTask').click();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey)).toBe('completed');
+  expect(peak).toBe(3);
+  expect(peak).toBeLessThanOrEqual(3);
+  for (const title of ['Independent work A', 'Independent work B', 'Independent work C', 'Independent work D']) {
+    expect(starts.indexOf('Review all results')).toBeGreaterThan(starts.indexOf(title));
+    expect(completions.indexOf(title)).toBeLessThan(completions.indexOf('Review all results'));
+  }
+});
+
+test('Forge pause is available while a provider request is in flight and the task can resume', async ({ page }) => {
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    if (body.stream === false) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: JSON.stringify({ steps: [
+        { title: 'Plan the work', kind: 'plan', dependsOn: [] },
+        { title: 'Do the work', kind: 'work', dependsOn: [0] },
+        { title: 'Review the work', kind: 'review', dependsOn: [1] }
+      ] }) } }] }) });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Finished the requested step.' } }] }) });
+  });
+  await seedWorkspace(page, [blankThread('agent-pause-resume')], {
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-test', model: 'mock-agent-model', enabled: true } }
+  });
+  await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
+  await page.locator('#agentPrompt').fill('Pause and resume a task');
+  await page.locator('#createAgentTask').click();
+  await expect(page.locator('[data-agent-pause]')).toBeVisible();
+  await page.locator('[data-agent-pause]').click();
+  await expect.poll(() => page.evaluate((key) => {
+    const task = JSON.parse(localStorage.getItem(key)).agentTasks?.[0];
+    return task?.status === 'paused' && task.steps.every((step) => step.status !== 'running');
+  }, storageKey), { timeout: 10000 }).toBe(true);
+  const paused = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
+  expect(paused.steps.some((step) => step.status === 'queued')).toBe(true);
+  await page.locator('[data-agent-run]').click();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
+});
+
+test('Forge retries a failed step without losing completed prerequisites', async ({ page }) => {
+  let failWorkOnce = true;
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    const user = body.messages?.find((message) => message.role === 'user')?.content || '';
+    if (body.stream === false) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: JSON.stringify({ steps: [
+        { title: 'Plan retry', kind: 'plan', dependsOn: [] },
+        { title: 'Do retryable work', kind: 'work', dependsOn: [0] },
+        { title: 'Review retry', kind: 'review', dependsOn: [1] }
+      ] }) } }] }) });
+    }
+    if (user.includes('Current step: Do retryable work') && failWorkOnce) {
+      failWorkOnce = false;
+      return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: 'temporary provider failure' } }) });
+    }
+    return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Recovered step result.' } }] }) });
+  });
+  await seedWorkspace(page, [blankThread('agent-retry')], {
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-test', model: 'mock-agent-model', enabled: true } }
+  });
+  await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
+  await page.locator('#agentPrompt').fill('Retry temporary provider failures');
+  await page.locator('#createAgentTask').click();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey)).toBe('failed');
+  const failed = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
+  expect(failed.steps.find((step) => step.title === 'Plan retry').status).toBe('completed');
+  expect(failed.steps.find((step) => step.title === 'Do retryable work').status).toBe('failed');
+  await page.locator('[data-agent-run]').click();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
+  const recovered = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
+  expect(recovered.runCount).toBe(2);
+  expect(recovered.steps.find((step) => step.title === 'Plan retry').status).toBe('completed');
+  expect(recovered.steps.find((step) => step.title === 'Do retryable work').status).toBe('completed');
+});
+
+test('Forge adaptive compute respects the two-pass limit and records evaluation metadata', async ({ page }) => {
+  let evaluatorCalls = 0;
+  let refinementCalls = 0;
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    const system = body.messages?.find((message) => message.role === 'system')?.content || '';
+    if (body.stream === false && system.includes('strict evaluator')) {
+      evaluatorCalls += 1;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: JSON.stringify({ confidence: 0.2, needs_more_compute: true, issues: ['Missing verification evidence'] }) } }] }) });
+    }
+    if (body.stream === false) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: JSON.stringify({ steps: [
+        { title: 'Plan security verification', kind: 'plan', dependsOn: [] },
+        { title: 'Verify security behavior', kind: 'work', dependsOn: [0] },
+        { title: 'Review security behavior', kind: 'review', dependsOn: [1] }
+      ] }) } }] }) });
+    }
+    if (system.includes('adaptive refinement pass')) refinementCalls += 1;
+    return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Security verification result.' } }] }) });
+  });
+  await seedWorkspace(page, [blankThread('agent-adaptive')], {
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-test', model: 'mock-agent-model', enabled: true } }
+  });
+  await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
+  await page.locator('#agentPrompt').fill('Security verification for production; test comprehensively');
+  await page.locator('#createAgentTask').click();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey)).toBe('completed');
+  const task = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
+  expect(task.steps.every((step) => step.compute && step.compute.extraPasses <= 2 && step.compute.initialTokens <= 2600)).toBe(true);
+  expect(task.steps.some((step) => step.compute.extraPasses === 2)).toBe(true);
+  expect(evaluatorCalls).toBeGreaterThan(0);
+  expect(refinementCalls).toBeGreaterThan(0);
+  expect(task.logs.filter((entry) => entry.message.includes('Adaptive compute pass')).length).toBeLessThanOrEqual(task.steps.length * 2);
+});
+
+test('Forge detects dependency cycles and leaves the task blocked with a useful error', async ({ page }) => {
+  const now = new Date().toISOString();
+  await seedWorkspace(page, [blankThread('agent-cycle')], {
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-test', model: 'mock-agent-model', enabled: true } },
+    agentTasks: [{
+      id: 'cycle-task', title: 'Cycle task', prompt: 'Check cycle handling', status: 'paused',
+      createdAt: now, updatedAt: now, runCount: 0, result: '', lastError: '',
+      schedule: { enabled: false, intervalMinutes: 60, nextRunAt: '' }, logs: [],
+      steps: [
+        { id: 'cycle-a', title: 'Cycle A', kind: 'work', status: 'queued', result: '', dependsOn: ['cycle-b'] },
+        { id: 'cycle-b', title: 'Cycle B', kind: 'review', status: 'queued', result: '', dependsOn: ['cycle-a'] }
+      ]
+    }]
+  });
+  await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
+  await page.locator('[data-agent-run="cycle-task"]').click();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey)).toBe('blocked');
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.lastError, storageKey)).toContain('dependency cycle');
+});
+test('Forge streaming provider timeout cancels a stalled response and records a clear error', async ({ page }) => {
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    if (body.stream === false) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: JSON.stringify({ steps: [
+        { title: 'Plan timeout', kind: 'plan', dependsOn: [] },
+        { title: 'Work timeout', kind: 'work', dependsOn: [0] },
+        { title: 'Review timeout', kind: 'review', dependsOn: [1] }
+      ] }) } }] }) });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    if (route.request().isNavigationRequest()) return;
+    try { await route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Too late.' } }] }) }); } catch (_) {}
+  });
+  await seedWorkspace(page, [blankThread('agent-timeout')], {
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-test', model: 'mock-agent-model', enabled: true, requestTimeoutMs: 300 } }
+  });
+  await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
+  await page.locator('#agentPrompt').fill('Timeout stalled provider response');
+  await page.locator('#createAgentTask').click();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey), { timeout: 10000 }).toBe('failed');
+  const task = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
+  expect(task).toBeTruthy();
+  expect(task.lastError).toContain('Provider request timed out');
+  expect(task.steps.some((step) => step.status === 'failed')).toBe(true);
+});
+
+
+test('Forge cancellation stops at a safe checkpoint and leaves unfinished work resumable', async ({ page }) => {
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    if (body.stream === false) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: JSON.stringify({ steps: [
+        { title: 'Plan cancel flow', kind: 'plan', dependsOn: [] },
+        { title: 'Execute cancellable work', kind: 'work', dependsOn: [0] },
+        { title: 'Review resumed work', kind: 'review', dependsOn: [1] }
+      ] }) } }] }) });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    try {
+      return await route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Cancellable work result.' } }] }) });
+    } catch (_) {}
+  });
+  await seedWorkspace(page, [blankThread('agent-cancel')], {
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-test', model: 'mock-agent-model', enabled: true } }
+  });
+  await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
+  await page.locator('#agentPrompt').fill('Cancel then resume safely');
+  await page.locator('#createAgentTask').click();
+  await expect(page.locator('[data-agent-cancel]')).toBeVisible();
+  await page.locator('[data-agent-cancel]').click();
+  await expect.poll(() => page.evaluate((key) => {
+    const task = JSON.parse(localStorage.getItem(key)).agentTasks?.[0];
+    return task?.status === 'cancelled' && task.steps.every((step) => step.status !== 'running');
+  }, storageKey), { timeout: 10000 }).toBe(true);
+  const cancelled = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
+  expect(cancelled.steps.some((step) => step.status === 'queued')).toBe(true);
+  expect(cancelled.logs.some((entry) => entry.message.includes('Cancellation reached'))).toBe(true);
+  await page.locator('[data-agent-run]').click();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
+  const resumed = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
+  expect(resumed.runCount).toBe(2);
+});
+
+test('Forge recovers an interrupted running task from persisted state on startup', async ({ page }) => {
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    expect(body.stream).toBe(true);
+    return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Recovered after restart.' } }] }) });
+  });
+  const now = new Date().toISOString();
+  await seedWorkspace(page, [blankThread('agent-restart')], {
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-test', model: 'mock-agent-model', enabled: true } },
+    agentTasks: [{
+      id: 'restart-task', title: 'Restart recovery', prompt: 'Recover after app restart', status: 'running',
+      createdAt: now, updatedAt: now, runCount: 4, result: '', lastError: '',
+      schedule: { enabled: false, intervalMinutes: 60, nextRunAt: '' }, logs: [],
+      steps: [
+        { id: 'restart-plan', title: 'Recover the plan', kind: 'plan', status: 'running', result: '', dependsOn: [] },
+        { id: 'restart-work', title: 'Recover the work', kind: 'work', status: 'queued', result: '', dependsOn: ['restart-plan'] },
+        { id: 'restart-review', title: 'Review recovered work', kind: 'review', status: 'queued', result: '', dependsOn: ['restart-work'] }
+      ]
+    }]
+  });
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
+  const recovered = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
+  expect(recovered.runCount).toBe(5);
+  expect(recovered.steps.every((step) => step.status === 'completed')).toBe(true);
+  expect(recovered.logs.some((entry) => entry.message.includes('Run 5 started'))).toBe(true);
 });
