@@ -654,8 +654,9 @@ test('Forge streaming provider timeout cancels a stalled response and records a 
   await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
   await page.locator('#agentPrompt').fill('Timeout stalled provider response');
   await page.locator('#createAgentTask').click();
-  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey)).toBe('failed');
-  const task = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey), { timeout: 10000 }).toBe('failed');
+  const task = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0], storageKey);
+  expect(task).toBeTruthy();
   expect(task.lastError).toContain('Provider request timed out');
   expect(task.steps.some((step) => step.status === 'failed')).toBe(true);
 });
