@@ -618,7 +618,7 @@ test('Forge detects dependency cycles and leaves the task blocked with a useful 
   await page.evaluate((key) => {
     const saved = JSON.parse(localStorage.getItem(key));
     saved.agentTasks = [{
-      id: 'cycle-task', title: 'Cycle task', prompt: 'Check cycle handling', status: 'queued',
+      id: 'cycle-task', title: 'Cycle task', prompt: 'Check cycle handling', status: 'paused',
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), runCount: 0, result: '', lastError: '',
       schedule: { enabled: false, intervalMinutes: 60, nextRunAt: '' }, logs: [],
       steps: [
