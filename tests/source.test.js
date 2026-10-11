@@ -201,5 +201,8 @@ describe('Websat production smoke checks', () => {
     expect(js).toContain('schedule: { enabled: false');
     expect(js).toContain('data-agent-duplicate=');
     expect(js).toContain('data-agent-export=');
+    expect(js).toContain("$$('[data-agent-pause]').forEach");
+    expect(js).toContain("$$('[data-agent-cancel]').forEach");
+    expect(js).toContain("'cancelled', 'blocked'");
   });
 });
