@@ -92,3 +92,40 @@ Browser mode continues to use the file input and browser storage fallback. Brows
 ### Architecture note
 
 The current UI remains a carefully preserved vanilla runtime while the Vite build/test boundary is introduced. A full React component migration is intentionally **not** performed in this release because replacing the working DOM architecture in one pass would create unnecessary regression risk. React's current client model expects the framework to own a root and its component tree, so the migration should be a dedicated, tested phase rather than an unused dependency added for appearance.
+
+
+## Forge reliability and release checks
+
+The Forge runtime bounds each task to three parallel steps and the application to three concurrent tasks. Provider inference is the dominant variable cost: adaptive evaluation can add up to two evaluation/refinement passes per step and therefore adds latency and provider usage. The evaluator uses the configured model, so its confidence score is a heuristic and not an independently calibrated probability. Browser/research steps require an enabled, allowlisted browser/search MCP tool; the app does not silently substitute a live browser when none is connected.
+
+Provider requests default to a 120-second timeout. The internal `settings.provider.requestTimeoutMs` value is normalized to 250–120,000 ms and is intended for controlled local configurations and tests; it is not exposed as a separate settings control. Streaming aborts are surfaced as timeout errors. Pause waits for current in-flight requests to reach a safe checkpoint; it does not forcibly interrupt model or MCP work. Failed/blocked steps can be retried after correcting the underlying issue. Saved work resumes only while the app is open, and closing the app/browser is not a guarantee of background execution.
+
+### Reliability verification
+
+CI runs source tests, Playwright browser tests, the production build, and Electron main/preload syntax checks. The Forge Playwright suite uses a mocked OpenAI-compatible endpoint to test independent-step concurrency and dependency ordering, pause/resume, failed-step retry, adaptive-compute limits, dependency-cycle handling, provider timeout errors, task duplication, and JSON report export.
+
+Run the checks locally:
+
+```bash
+npm ci
+npx playwright install chromium
+npm test
+npm run test:a11y
+npm run build
+node --check electron/main.cjs
+node --check electron/preload.cjs
+```
+
+### Manual release-candidate smoke test
+
+Automated tests do not replace a packaged-app check. Before publishing a Windows release candidate:
+
+1. Build the installer with `npm run desktop:build` on a supported Windows runner.
+2. Install and launch the packaged app; create a task with a configured test provider and confirm the task queue updates during execution.
+3. Verify pause reaches a safe checkpoint, resume continues queued work, and a failed step can be retried.
+4. Confirm duplicate tasks have new step IDs and disabled recurring schedules; export a JSON report and validate its contents.
+5. Verify a stalled provider produces a timeout message, restart the app and check persisted task state, then inspect memory/CPU while three tasks are active.
+6. Confirm provider keys remain hidden in the renderer and no unexpected external action runs without an enabled/allowlisted tool and any required confirmation.
+7. Record OS, build commit, provider type, test results, and any limitations before tagging a release.
+
+Do not call the application production-ready until the packaged-app smoke test is completed on the target OS. The automated suite validates mocked provider behavior; real-provider, real-MCP, and operating-system packaging behavior still require environment-specific verification.
