@@ -178,4 +178,22 @@ describe('Websat production smoke checks', () => {
     expect(css).toContain('.agent-task-result');
     expect(css).toContain('.agent-run-log');
   });
+
+  
+  test('agent runtime schedules dependency-aware parallel work with adaptive test-time compute', () => {
+    const js = read('app.js');
+    const html = read('index.html');
+    expect(js).toContain('const MAX_PARALLEL_AGENTS = 3');
+    expect(js).toContain('const MAX_PARALLEL_STEPS = 3');
+    expect(js).toContain('Promise.allSettled(activeWave.map');
+    expect(js).toContain('step.dependsOn');
+    expect(js).toContain('async function adaptiveAgentTurn');
+    expect(js).toContain('async function agentComputeProfile');
+    expect(js).toContain('needs_more_compute');
+    expect(js).toContain('provider.maxTokens');
+    expect(js).toContain('step.compute = { initialTokens: profile.initialTokens');
+    expect(js).toContain('Pause reached after the in-flight request; this step remains resumable.');
+    expect(js).toContain('Adaptive compute: ');
+    expect(html).toContain('Agents');
+  });
 });
