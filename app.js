@@ -1689,6 +1689,10 @@
       agentLog(task, 'info', 'Recurring run started with a fresh step cycle.');
     }
     agentRuns.add(task.id);
+    // Recover interrupted in-flight steps and make failed/blocked steps explicitly retryable.
+    task.steps.forEach((step) => {
+      if (step.status === 'running' || step.status === 'failed' || step.status === 'blocked') step.status = 'queued';
+    });
     task.status = 'running'; task.lastError = ''; task.runCount = (task.runCount || 0) + 1;
     agentLog(task, 'info', 'Run ' + task.runCount + ' started · max ' + MAX_PARALLEL_STEPS + ' parallel steps.');
     persist();
