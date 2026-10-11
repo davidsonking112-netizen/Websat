@@ -1545,8 +1545,10 @@
       const allowedKinds = new Set(['plan', 'research', 'browser', 'work', 'review']);
       let rawPlan = supplied.filter((step) => step && typeof step.title === 'string' && step.title.trim() && allowedKinds.has(step.kind)).slice(0, 6);
       if (rawPlan.length < 2) throw new Error('Planner returned too few valid steps');
-      if (rawPlan[0].kind !== 'plan') rawPlan.unshift({ title: 'Confirm the objective and constraints', kind: 'plan', dependsOn: [] });
-      else rawPlan[0] = { ...rawPlan[0], kind: 'plan', dependsOn: [] };
+      if (rawPlan[0].kind !== 'plan') {
+        rawPlan = rawPlan.map((step) => ({ ...step, dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn.map((dep) => Number.isInteger(dep) ? dep + 1 : dep) : undefined }));
+        rawPlan.unshift({ title: 'Confirm the objective and constraints', kind: 'plan', dependsOn: [] });
+      } else rawPlan[0] = { ...rawPlan[0], kind: 'plan', dependsOn: [] };
       if (rawPlan[rawPlan.length - 1].kind !== 'review') rawPlan.push({ title: 'Verify the result against the original request', kind: 'review', dependsOn: [rawPlan.length - 1] });
       else rawPlan[rawPlan.length - 1] = { ...rawPlan[rawPlan.length - 1], kind: 'review' };
       if (!rawPlan.slice(1, -1).some((step) => ['research', 'browser', 'work'].includes(step.kind))) rawPlan.splice(rawPlan.length - 1, 0, { title: 'Execute the requested task', kind: 'work', dependsOn: [0] });
