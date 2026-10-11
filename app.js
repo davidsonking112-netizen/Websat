@@ -1040,7 +1040,7 @@
       let response;
       try { response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal }); }
       catch (error) {
-        if (error?.name === 'AbortError') throw new Error('Provider request timed out after ' + Math.round(timeoutMs / 1000) + ' seconds');
+        if (error?.name === 'AbortError') throw new Error('Provider request timed out after ' + Math.ceil(timeoutMs / 1000) + ' seconds');
         throw new Error('Could not reach provider. Check the URL, network, CORS, and API key (' + (error?.message || 'network error') + ')');
       }
       if (!response.ok) throw new Error('Model HTTP ' + response.status + ' · ' + (await response.text()).slice(0, 300));
@@ -1103,7 +1103,7 @@
       }));
       return { content: output, toolCalls };
     } catch (error) {
-      if (error?.name === 'AbortError') throw new Error('Provider request timed out after ' + Math.round(timeoutMs / 1000) + ' seconds');
+      if (error?.name === 'AbortError') throw new Error('Provider request timed out after ' + Math.ceil(timeoutMs / 1000) + ' seconds');
       throw error;
     } finally { clearTimeout(timeout); }
   }
