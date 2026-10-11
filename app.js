@@ -1554,8 +1554,9 @@
       if (!rawPlan.slice(1, -1).some((step) => ['research', 'browser', 'work'].includes(step.kind))) rawPlan.splice(rawPlan.length - 1, 0, { title: 'Execute the requested task', kind: 'work', dependsOn: [0] });
       const ids = rawPlan.map((_, index) => 'step-' + (index + 1) + '-' + makeId('agent'));
       const steps = rawPlan.map((step, index) => {
-        let deps = Array.isArray(step.dependsOn) ? step.dependsOn.filter((dep) => Number.isInteger(dep) && dep >= 0 && dep < rawPlan.length && dep !== index).map((dep) => ids[dep]) : [];
+        let deps = Array.isArray(step.dependsOn) ? step.dependsOn.filter((dep) => Number.isInteger(dep) && dep >= 0 && dep < index).map((dep) => ids[dep]) : [];
         if (index > 0 && !Array.isArray(step.dependsOn)) deps = [ids[index - 1]];
+        if (index > 0 && !deps.length) deps = [ids[0]];
         if (index === 0) deps = [];
         if (step.kind === 'review' && !deps.length) deps = [ids[index - 1]];
         return { id: ids[index], title: step.title.trim().slice(0, 160), kind: step.kind, status: 'queued', result: '', dependsOn: [...new Set(deps)] };
