@@ -40,6 +40,13 @@ This is still a front-end prototype: it has no user authentication, server-side 
 3. Edit an assistant, allowlist the discovered MCP tools, and enable **Network tools** permission. Read-only/destructive annotations also require the corresponding assistant permission.
 4. Tool connections require approval by default. The connection's **Auto-call** setting disables that confirmation; use it only for trusted endpoints and actions.
 
+
+### Agent tasks and execution
+
+Forge's **Agents** workspace supports model-planned task decomposition when a live provider is enabled, with a deterministic local plan as a fallback. Each step receives the task objective and prior completed-step results; the final review step is instructed to check requirements, evidence, and unresolved gaps. Tool access still follows the active assistant's MCP allowlist, permissions, confirmation policy, and the per-turn execution limits above.
+
+Task state, step outcomes, the latest result, run count, and a bounded execution log are persisted locally. Pause is a safe checkpoint: an in-flight provider/tool request is allowed to finish, then the current step remains resumable rather than being falsely marked complete. Recurring tasks begin a fresh step cycle when due. Scheduling only runs while Forge is open; it is not an always-on background service. A planned or completed step is not proof that an external action succeeded—review the recorded output and evidence.
+
 ## Validation
 
 Validation covers Vitest source checks, Playwright browser regressions for provider authentication/system prompts, Canvas autosave/provider-backed edits/code export, runtime privacy disclosure, Ollama streaming, MCP tool execution and discovery pagination, the production build, and Electron main/preload syntax checks. GitHub Actions installs Chromium and runs the browser suite on pushes and pull requests.
