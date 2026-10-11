@@ -1588,8 +1588,8 @@
         agentLog(task, 'info', 'Started step: ' + step.title, step.id); persist();
         const live = state.settings.provider?.enabled;
         const tools = availableMcpTools(selectedAssistant());
-        if ((step.kind === 'research' || step.kind === 'browser') && !live) {
-          step.status = 'blocked'; step.result = 'Connect a live model in Settings to run research. The plan is saved and resumable.';
+        if (['research', 'browser', 'work', 'review'].includes(step.kind) && !live) {
+          step.status = 'blocked'; step.result = 'Connect and enable a live model in Settings to execute this step. The plan is saved and resumable; no work is being reported as completed.';
           task.status = 'blocked'; agentLog(task, 'warning', step.result, step.id); break;
         }
         if (step.kind === 'browser' && live && !tools.some((entry) => /browser|search|fetch|web|research/i.test(entry.tool.name + ' ' + (entry.tool.description || '')))) {
