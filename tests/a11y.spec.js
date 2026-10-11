@@ -406,3 +406,68 @@ test('MCP discovery initializes the connection and follows tool-list pagination'
   expect(methods[1].protocolVersion).toBe('2025-03-26');
   expect(methods[2].protocolVersion).toBe('2025-03-26');
 });
+
+
+test('Forge agent workflow completes, duplicates safely, exports a report, and has no console errors', async ({ page }) => {
+  const errors = [];
+  const calls = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    calls.push(body);
+    if (body.stream === false) {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify({ steps: [
+          { title: 'Set the objective', kind: 'plan', dependsOn: [] },
+          { title: 'Write a greeting', kind: 'work', dependsOn: [0] },
+          { title: 'Review the greeting', kind: 'review', dependsOn: [1] }
+        ] }) } }] })
+      });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: sse({ choices: [{ delta: { content: 'Greeting result: Hello from Forge.' } }] })
+    });
+  });
+
+  await seedWorkspace(page, [blankThread('agent-smoke-test')], {
+    settings: {
+      provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-agent-smoke', model: 'mock-agent-model', enabled: true }
+    }
+  });
+  await page.locator('.nav-item').filter({ hasText: 'Agents' }).click();
+  await expect(page.locator('#overlayTitle')).toHaveText('Agents');
+  await page.locator('#agentPrompt').fill('Write a greeting');
+  await page.locator('#createAgentTask').click();
+
+  await expect(page.locator('.agent-task-card')).toHaveCount(1);
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey)).toBe('completed');
+  await expect(page.locator('.agent-task-result')).toContainText('Greeting result: Hello from Forge.');
+  expect(calls.filter((body) => body.stream === false)).toHaveLength(1);
+  expect(calls.filter((body) => body.stream === true)).toHaveLength(3);
+
+  await page.locator('[data-agent-duplicate]').first().click();
+  await expect(page.locator('.agent-task-card')).toHaveCount(2);
+  const copied = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0], storageKey);
+  expect(copied.status).toBe('queued');
+  expect(copied.runCount).toBe(0);
+  expect(copied.schedule.enabled).toBe(false);
+  expect(copied.steps.every((step) => step.status === 'queued' && !step.result && !step.compute)).toBe(true);
+  expect(copied.steps.some((step) => step.dependsOn.length)).toBe(true);
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('[data-agent-export]').first().click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^websat-agent-report-.*\.json$/);
+  const downloadPath = await download.path();
+  const { readFile } = await import('node:fs/promises');
+  const report = JSON.parse(await readFile(downloadPath, 'utf8'));
+  expect(report.schemaVersion).toBe(1);
+  expect(report.task.steps).toHaveLength(3);
+  expect(report.task.steps[0].status).toBe('queued');
+
+  expect(errors).toEqual([]);
+});

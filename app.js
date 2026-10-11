@@ -1692,9 +1692,9 @@
     });
     $$('[data-agent-run]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentRun); if (task) runAgentTask(task); }));
     $$('[data-agent-pause]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentPause); if (task) { task.status = 'paused'; agentLog(task, 'warning', 'Pause requested; the current model/tool request will finish before the next safe checkpoint.'); persist(); renderAgents(); showToast('Pause requested · waiting for the current step to reach a safe checkpoint'); } }));
-    $('[data-agent-duplicate]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentDuplicate); if (task) duplicateAgentTask(task); }));
-    $('[data-agent-export]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentExport); if (task) exportAgentTaskReport(task); }));
-    $('[data-agent-browser]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentBrowser); if (task) window.open('https://www.google.com/search?q=' + encodeURIComponent(task.prompt), '_blank', 'noopener,noreferrer'); }));
+    $$('[data-agent-duplicate]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentDuplicate); if (task) duplicateAgentTask(task); }));
+    $$('[data-agent-export]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentExport); if (task) exportAgentTaskReport(task); }));
+    $$('[data-agent-browser]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentBrowser); if (task) window.open('https://www.google.com/search?q=' + encodeURIComponent(task.prompt), '_blank', 'noopener,noreferrer'); }));
   }
   const MAX_PARALLEL_AGENTS = 3;
   const MAX_PARALLEL_STEPS = 3;
