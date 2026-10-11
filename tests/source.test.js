@@ -188,7 +188,7 @@ describe('Websat production smoke checks', () => {
     expect(js).toContain('Promise.allSettled(activeWave.map');
     expect(js).toContain('step.dependsOn');
     expect(js).toContain('async function adaptiveAgentTurn');
-    expect(js).toContain('async function agentComputeProfile');
+    expect(js).toContain('function agentComputeProfile(task, step)');
     expect(js).toContain('needs_more_compute');
     expect(js).toContain('provider.maxTokens');
     expect(js).toContain('step.compute = { initialTokens: profile.initialTokens');
