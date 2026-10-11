@@ -487,7 +487,9 @@ test('Forge runs independent steps concurrently but waits for their dependencies
         { title: 'Plan dependencies', kind: 'plan', dependsOn: [] },
         { title: 'Independent work A', kind: 'work', dependsOn: [0] },
         { title: 'Independent work B', kind: 'work', dependsOn: [0] },
-        { title: 'Review both results', kind: 'review', dependsOn: [1, 2] }
+        { title: 'Independent work C', kind: 'work', dependsOn: [0] },
+        { title: 'Independent work D', kind: 'work', dependsOn: [0] },
+        { title: 'Review all results', kind: 'review', dependsOn: [1, 2, 3, 4] }
       ] }) } }] }) });
     }
     const title = user.match(/Current step: ([^\n]+)/)?.[1] || 'unknown';
@@ -503,11 +505,12 @@ test('Forge runs independent steps concurrently but waits for their dependencies
   await page.locator('#agentPrompt').fill('Test parallel dependency execution');
   await page.locator('#createAgentTask').click();
   await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks[0]?.status, storageKey)).toBe('completed');
-  expect(peak).toBeGreaterThanOrEqual(2);
-  expect(starts.indexOf('Review both results')).toBeGreaterThan(starts.indexOf('Independent work A'));
-  expect(starts.indexOf('Review both results')).toBeGreaterThan(starts.indexOf('Independent work B'));
-  expect(completions.indexOf('Independent work A')).toBeLessThan(completions.indexOf('Review both results'));
-  expect(completions.indexOf('Independent work B')).toBeLessThan(completions.indexOf('Review both results'));
+  expect(peak).toBe(3);
+  expect(peak).toBeLessThanOrEqual(3);
+  for (const title of ['Independent work A', 'Independent work B', 'Independent work C', 'Independent work D']) {
+    expect(starts.indexOf('Review all results')).toBeGreaterThan(starts.indexOf(title));
+    expect(completions.indexOf(title)).toBeLessThan(completions.indexOf('Review all results'));
+  }
 });
 
 test('Forge pause is available while a provider request is in flight and the task can resume', async ({ page }) => {
