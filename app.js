@@ -65,6 +65,7 @@
       { id: 'forge-analyst', name: 'Forge Analyst', description: 'Finds patterns and makes decisions legible', instructions: 'Analyze carefully, expose assumptions, and make decisions legible.', tools: [], permissions: {} }
     ],
     toolConnections: [],
+    agentTasks: [],
     settings: { theme: 'system', onboardingComplete: false, reduceMotion: false, systemPrompt: '', provider: { kind: 'openai', baseUrl: '', apiKey: '', model: 'gpt-4o-mini', enabled: false } }
   });
 
@@ -77,6 +78,28 @@
       kind: message.kind,
       content: textValue(message.content),
       label: textValue(message.label, message.kind === 'assistant' ? 'Forge Local' : '')
+    };
+  }
+
+  function normalizeAgentTask(task) {
+    if (!task || typeof task !== 'object') return null;
+    const steps = Array.isArray(task.steps) ? task.steps.map((step, index) => ({
+      id: textValue(step?.id, 'step-' + index),
+      title: textValue(step?.title, 'Task step').slice(0, 160),
+      kind: textValue(step?.kind, 'work').slice(0, 40),
+      status: ['queued', 'running', 'completed', 'blocked', 'failed'].includes(step?.status) ? step.status : 'queued',
+      result: textValue(step?.result).slice(0, 6000)
+    })).slice(0, 12) : [];
+    return {
+      id: textValue(task.id, makeId('agent-task')),
+      title: textValue(task.title, 'Untitled agent task').slice(0, 160),
+      prompt: textValue(task.prompt).slice(0, 4000),
+      status: ['queued', 'running', 'completed', 'paused', 'blocked', 'failed'].includes(task.status) ? task.status : 'queued',
+      steps,
+      createdAt: textValue(task.createdAt),
+      updatedAt: textValue(task.updatedAt),
+      schedule: task.schedule && typeof task.schedule === 'object' ? { enabled: Boolean(task.schedule.enabled), intervalMinutes: Math.max(15, Math.min(10080, finiteNumber(task.schedule.intervalMinutes, 60))), nextRunAt: textValue(task.schedule.nextRunAt) } : { enabled: false, intervalMinutes: 60, nextRunAt: '' },
+      lastError: textValue(task.lastError).slice(0, 1000)
     };
   }
 
@@ -172,6 +195,7 @@
         protocolVersion: textValue(t?.protocolVersion).slice(0, 40),
         tools: Array.isArray(t?.tools) ? t.tools.slice(0, 100) : []
       })) : [],
+      agentTasks: Array.isArray(raw.agentTasks) ? raw.agentTasks.map(normalizeAgentTask).filter(Boolean).slice(0, 50) : base.agentTasks,
       settings: {
         theme: ['system', 'light', 'dark'].includes(raw.settings?.theme) ? raw.settings.theme : 'system',
         onboardingComplete: Boolean(raw.settings?.onboardingComplete),
@@ -1464,6 +1488,76 @@
     });
   }
 
+  const agentRuns = new Set();
+  function buildAgentPlan(prompt) {
+    const lower = prompt.toLowerCase();
+    const steps = [{ id: 'step-plan', title: 'Confirm the objective and constraints', kind: 'plan', status: 'queued', result: '' }];
+    if (lower.includes('research') || lower.includes('source') || lower.includes('web') || lower.includes('latest')) {
+      steps.push({ id: 'step-research', title: 'Research the topic with the connected model and search tools', kind: 'research', status: 'queued', result: '' });
+      steps.push({ id: 'step-browser', title: 'Use browser/search tools to collect and compare sources', kind: 'browser', status: 'queued', result: '' });
+    }
+    if (lower.includes('code') || lower.includes('build') || lower.includes('implement')) steps.push({ id: 'step-build', title: 'Implement or transform the requested work', kind: 'work', status: 'queued', result: '' });
+    else steps.push({ id: 'step-work', title: 'Produce the requested result from the gathered context', kind: 'work', status: 'queued', result: '' });
+    steps.push({ id: 'step-review', title: 'Review the result against the original request', kind: 'review', status: 'queued', result: '' });
+    return steps.slice(0, 8);
+  }
+  function agentTaskSummary(task) {
+    const done = task.steps.filter((step) => step.status === 'completed').length;
+    return done + '/' + task.steps.length + ' steps · ' + task.status;
+  }
+  function renderAgents() {
+    const tasks = state.agentTasks || [];
+    const cards = tasks.length ? tasks.map((task) => '<article class="agent-task-card"><div class="agent-task-head"><div><strong>' + escapeHtml(task.title) + '</strong><small>' + escapeHtml(agentTaskSummary(task)) + '</small></div><span class="agent-status ' + escapeAttribute(task.status) + '">' + escapeHtml(task.status) + '</span></div><p class="agent-task-prompt">' + escapeHtml(task.prompt) + '</p><ol class="agent-step-list">' + task.steps.map((step) => '<li class="agent-step ' + escapeAttribute(step.status) + '"><span class="agent-step-mark">' + (step.status === 'completed' ? '✓' : step.status === 'running' ? '…' : step.status === 'blocked' ? '!' : '○') + '</span><span><strong>' + escapeHtml(step.title) + '</strong>' + (step.result ? '<small>' + escapeHtml(step.result.slice(0, 240)) + '</small>' : '') + '</span></li>').join('') + '</ol><div class="agent-task-actions">' + ((task.status === 'queued' || task.status === 'paused' || task.status === 'blocked' || task.status === 'failed') ? '<button class="overlay-action" data-agent-run="' + escapeAttribute(task.id) + '" type="button">Run / resume</button>' : '') + (task.status === 'running' ? '<button class="overlay-action" data-agent-pause="' + escapeAttribute(task.id) + '" type="button">Pause</button>' : '') + '<button class="overlay-action" data-agent-browser="' + escapeAttribute(task.id) + '" type="button">Open research browser</button></div></article>').join('') : '<div class="empty-overlay"><strong>No agent tasks yet.</strong><small>Create a task to see its decomposed steps here.</small></div>';
+    openOverlay('Agents', 'LOCAL AGENT CONSOLE', '<div class="agent-console"><p class="settings-copy">Forge plans locally, executes one bounded step at a time, and saves progress. Scheduled work resumes when this workspace is open. Connect a live model and approved MCP/browser tools for real research actions.</p><section class="agent-create"><label><strong>New task</strong><textarea id="agentPrompt" rows="3" maxlength="4000" placeholder="Research a topic, compare sources, and draft a concise answer…"></textarea></label><label class="agent-schedule-toggle"><input id="agentSchedule" type="checkbox" /> Repeat while Forge is open</label><label class="agent-interval">Every <input id="agentInterval" type="number" min="15" max="10080" value="60" /> minutes</label><button class="canvas-save" id="createAgentTask" type="button">Plan task</button></section><section><div class="assistant-toolbar"><strong>Task queue</strong><span>' + tasks.length + ' saved</span></div>' + cards + '</section><p class="settings-copy agent-boundary">Background execution is resumable local work, not an always-on server worker. Closing the browser pauses execution; the next open resumes saved steps.</p></div>');
+    byId('createAgentTask').addEventListener('click', () => {
+      const prompt = byId('agentPrompt').value.trim();
+      if (!prompt) { showToast('Describe the agent task first'); return; }
+      const scheduleEnabled = byId('agentSchedule').checked;
+      const interval = Math.max(15, Math.min(10080, Number(byId('agentInterval').value) || 60));
+      const now = new Date().toISOString();
+      const task = { id: makeId('agent-task'), title: prompt.length > 72 ? prompt.slice(0, 72) + '…' : prompt, prompt, status: 'queued', steps: buildAgentPlan(prompt), createdAt: now, updatedAt: now, schedule: { enabled: scheduleEnabled, intervalMinutes: interval, nextRunAt: scheduleEnabled ? new Date(Date.now() + interval * 60000).toISOString() : '' }, lastError: '' };
+      state.agentTasks.unshift(task); persist(); renderAgents(); runAgentTask(task);
+    });
+    $$('[data-agent-run]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentRun); if (task) runAgentTask(task); }));
+    $$('[data-agent-pause]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentPause); if (task) { task.status = 'paused'; task.updatedAt = new Date().toISOString(); persist(); renderAgents(); showToast('Agent task paused safely'); } }));
+    $$('[data-agent-browser]').forEach((button) => button.addEventListener('click', () => { const task = state.agentTasks.find((item) => item.id === button.dataset.agentBrowser); if (task) window.open('https://www.google.com/search?q=' + encodeURIComponent(task.prompt), '_blank', 'noopener,noreferrer'); }));
+  }
+  async function runAgentTask(task) {
+    if (!task || agentRuns.has(task.id)) return;
+    agentRuns.add(task.id);
+    task.status = 'running'; task.lastError = ''; task.updatedAt = new Date().toISOString(); persist();
+    try {
+      for (const step of task.steps) {
+        if (task.status === 'paused') break;
+        if (step.status === 'completed') continue;
+        step.status = 'running'; task.updatedAt = new Date().toISOString(); persist();
+        const live = state.settings.provider?.enabled;
+        const tools = availableMcpTools(selectedAssistant());
+        if ((step.kind === 'research' || step.kind === 'browser') && !live) {
+          step.status = 'blocked'; step.result = 'Connect a live model in Settings to run research. The plan is saved and resumable.'; task.status = 'blocked'; break;
+        }
+        if (step.kind === 'browser' && live && !tools.some((entry) => /browser|search|fetch|web|research/i.test(entry.tool.name + ' ' + (entry.tool.description || '')))) {
+          step.status = 'blocked'; step.result = 'No allowlisted browser/search MCP tool is connected. Add one in Assistants & tools, then resume.'; task.status = 'blocked'; break;
+        }
+        if (live && (step.kind === 'research' || step.kind === 'browser' || step.kind === 'work' || step.kind === 'review')) {
+          const messages = [{ role: 'system', content: 'You are Forge Agent. Complete exactly one bounded task step. Do not claim actions you did not perform. Return a concise result with sources when research tools were used.' }, { role: 'user', content: 'Overall task: ' + task.prompt + '\nCurrent step: ' + step.title }];
+          step.result = await completeProviderTurn(messages, state.settings.provider, selectedAssistant(), null, (status) => { step.result = status; });
+        } else {
+          step.result = step.kind === 'plan' ? 'Objective decomposed into bounded, resumable steps.' : 'Local step checkpoint saved; connect a live model for content execution.';
+        }
+        step.status = 'completed'; task.updatedAt = new Date().toISOString(); persist();
+      }
+      if (task.status === 'running') task.status = task.steps.every((step) => step.status === 'completed') ? 'completed' : 'paused';
+      if (task.schedule.enabled) { task.status = 'queued'; task.schedule.nextRunAt = new Date(Date.now() + task.schedule.intervalMinutes * 60000).toISOString(); }
+    } catch (error) { task.status = 'failed'; task.lastError = error.message || 'Agent step failed'; }
+    finally { task.updatedAt = new Date().toISOString(); agentRuns.delete(task.id); persist(); if (overlay.classList.contains('open')) renderAgents(); }
+  }
+  function resumeAgentTasks() {
+    const now = Date.now();
+    (state.agentTasks || []).filter((task) => task.status === 'running' || task.status === 'queued' && (!task.schedule.enabled || !task.schedule.nextRunAt || Date.parse(task.schedule.nextRunAt) <= now)).slice(0, 2).forEach(runAgentTask);
+  }
+  function startAgentWorker() { resumeAgentTasks(); setInterval(resumeAgentTasks, 15000); window.addEventListener('visibilitychange', () => { if (!document.hidden) resumeAgentTasks(); }); }
+
   function showWorkspace(kind) {
     if (kind === 'Projects') {
       const cards = state.projects.map((project) =>
@@ -1522,6 +1616,10 @@
 
     if (kind === 'Assistants') {
       renderAssistants();
+      return;
+    }
+    if (kind === 'Agents') {
+      renderAgents();
       return;
     }
 
@@ -1953,5 +2051,6 @@
   renderThread(currentThread());
   resizeComposer();
   updateStorageIndicator();
+  startAgentWorker();
   desktopReady = hydrateDesktop();
 })();

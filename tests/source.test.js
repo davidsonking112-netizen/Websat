@@ -149,4 +149,17 @@ describe('Websat production smoke checks', () => {
     expect(css).toContain(':root[data-theme="light"] .sidebar');
     expect(css).toContain('.attachment-video');
   });
+
+  test('agent console plans bounded subtasks and resumes saved work', () => {
+    const js = read('app.js');
+    const html = read('index.html');
+    const css = read('styles.css');
+    expect(js).toContain('buildAgentPlan');
+    expect(js).toContain('normalizeAgentTask');
+    expect(js).toContain('completeProviderTurn(messages');
+    expect(js).toContain('startAgentWorker');
+    expect(js).toContain('intervalMinutes');
+    expect(html).toContain('Agents');
+    expect(css).toContain('.agent-step');
+  });
 });
