@@ -40,14 +40,41 @@ function assertTrustedRenderer(event) {
   }
 }
 
-async function requestRemote(urlValue, options, timeoutMs) {
+const activeRemoteRequests = new Map();
+
+async function readResponseTextLimited(response, maxBytes = 10 * 1024 * 1024) {
+  const advertised = Number(response.headers.get('content-length'));
+  if (Number.isFinite(advertised) && advertised > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error('Remote response exceeded the 10 MB safety limit');
+  }
+  if (!response.body) {
+    const text = await response.text();
+    if (Buffer.byteLength(text, 'utf8') > maxBytes) throw new Error('Remote response exceeded the 10 MB safety limit');
+    return text;
+  }
+  const reader = response.body.getReader(); const chunks = []; let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) { await reader.cancel().catch(() => {}); throw new Error('Remote response exceeded the 10 MB safety limit'); }
+      chunks.push(Buffer.from(value));
+    }
+  } finally { reader.releaseLock(); }
+  return Buffer.concat(chunks, total).toString('utf8');
+}
+
+async function requestRemote(urlValue, options, timeoutMs, requestKey = '') {
   const url = validateRemoteUrl(urlValue);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  if (requestKey) activeRemoteRequests.set(requestKey, controller);
   try {
     const response = await fetch(url, { ...options, redirect: 'error', signal: controller.signal });
-    const text = await response.text();
-    if (text.length > 10 * 1024 * 1024) throw new Error('Remote response exceeded the 10 MB safety limit');
+    const text = await readResponseTextLimited(response);
     return {
       ok: response.ok,
       status: response.status,
@@ -56,9 +83,17 @@ async function requestRemote(urlValue, options, timeoutMs) {
       mcpSessionId: response.headers.get('Mcp-Session-Id') || ''
     };
   } catch (error) {
-    if (error?.name === 'AbortError') throw new Error('Remote request timed out');
+    if (error?.name === 'AbortError') throw new Error(timedOut ? 'Remote request timed out' : 'Remote request cancelled');
     throw error;
-  } finally { clearTimeout(timeout); }
+  } finally {
+    clearTimeout(timeout);
+    if (requestKey && activeRemoteRequests.get(requestKey) === controller) activeRemoteRequests.delete(requestKey);
+  }
+}
+
+function requestKeyFor(event, requestId) {
+  const id = String(requestId || '').slice(0, 120);
+  return id ? event.sender.id + ':' + id : '';
 }
 
 function mimeType(filePath) {
@@ -81,9 +116,14 @@ function readNativeFile(filePath) {
   const type = mimeType(filePath);
   const result = { name: path.basename(filePath), type, size: stat.size, content: '', preview: '', truncated: false };
   if (isText(type, filePath)) {
-    const data = fs.readFileSync(filePath);
-    result.content = data.subarray(0, MAX_TEXT_BYTES).toString('utf8');
-    result.truncated = data.length > MAX_TEXT_BYTES;
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const length = Math.min(stat.size, MAX_TEXT_BYTES);
+      const data = Buffer.alloc(length);
+      fs.readSync(fd, data, 0, length, 0);
+      result.content = data.toString('utf8');
+      result.truncated = stat.size > MAX_TEXT_BYTES;
+    } finally { fs.closeSync(fd); }
   } else if (type.startsWith('image/') && stat.size <= MAX_IMAGE_BYTES) {
     result.preview = `data:${type};base64,${fs.readFileSync(filePath).toString('base64')}`;
   }
@@ -164,7 +204,7 @@ ipcMain.handle('forge:provider-request', async (event, request = {}) => {
   const body = { ...(request.body || {}), stream: false };
   const serialized = JSON.stringify(body);
   if (Buffer.byteLength(serialized) > 10 * 1024 * 1024) throw new Error('Provider request exceeded the 10 MB safety limit');
-  return requestRemote(request.url, { method: 'POST', headers, body: serialized }, 120000);
+  return requestRemote(request.url, { method: 'POST', headers, body: serialized }, 120000, requestKeyFor(event, request.requestId));
 });
 
 ipcMain.handle('forge:mcp-request', async (event, request = {}) => {
@@ -177,7 +217,14 @@ ipcMain.handle('forge:mcp-request', async (event, request = {}) => {
     method: 'POST',
     headers: allowedHeaders,
     body: String(request.body || '').slice(0, 2 * 1024 * 1024)
-  }, 30000);
+  }, 30000, requestKeyFor(event, request.requestId));
+});
+
+ipcMain.on('forge:remote-abort', (event, requestId) => {
+  try {
+    assertTrustedRenderer(event);
+    activeRemoteRequests.get(requestKeyFor(event, requestId))?.abort();
+  } catch (_) {}
 });
 
 ipcMain.handle('forge:set-secret', (event, value) => {
@@ -199,8 +246,9 @@ ipcMain.handle('forge:open-files', async (event) => {
   return result.filePaths.map((filePath) => readNativeFile(filePath));
 });
 
-ipcMain.on('forge:notify', (_event, title, body) => {
-  if (Notification.isSupported()) new Notification({ title: String(title || 'Forge'), body: String(body || '') }).show();
+ipcMain.on('forge:notify', (event, title, body) => {
+  try { assertTrustedRenderer(event); } catch (_) { return; }
+  if (Notification.isSupported()) new Notification({ title: String(title || 'Forge').slice(0, 120), body: String(body || '').slice(0, 500) }).show();
 });
 
 app.whenReady().then(() => {

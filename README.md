@@ -12,16 +12,16 @@ The prototype is functional in-browser:
 - Canvas opens an editable work surface with local draft autosave, explicit version checkpoints, restore, and export tools. Its writing actions use the configured provider only when explicitly clicked; they never invoke MCP tools, and each successful rewrite keeps the prior draft as a restore point. Code export extracts a single fenced block with a matching file extension, while Markdown preserves full or multi-block drafts.
 - Composer interactions, runtime switching between deterministic local preview and a configured provider, keyboard shortcuts, and the context drawer work without a server. The active-runtime indicator identifies when prompts are sent to a configured endpoint.
 - Forge can connect to Ollama (`/api/chat`) or OpenAI-compatible chat-completions endpoints. Browser requests stream when the endpoint supports it; Electron uses buffered main-process requests to avoid renderer CORS restrictions, so desktop replies currently arrive as complete messages rather than progressive tokens.
-- Provider requests include the global system prompt, active assistant instructions, saved project instructions, recent thread history, and readable local attachment contents.
+- Provider requests include the global system prompt, active assistant instructions, recent thread history, and readable thread attachments. Regenerating an earlier turn sends only history up to that user message. Project instructions and text files are included only when that specific thread explicitly selects that project; project memory must also be on. Unselected projects are never included, including in local preview responses.
 - Provider endpoints, model names, and Bearer API keys are configurable in Settings. Remote endpoints must use HTTPS; HTTP is allowed only for loopback. When enabled, prompts, recent thread history, system/assistant/project instructions, and readable attachment text are sent to the configured endpoint. A blank key field preserves the saved key; key deletion is explicit. Electron stores keys with `safeStorage` and attaches them from the main process; browser mode stores them in local storage and the provider must permit browser CORS.
-- OpenAI-compatible and Ollama tool-call responses can invoke MCP tools, pass results back to the model, and continue to a final answer. Per-turn execution is bounded to 8 MCP calls and 6 model/tool rounds.
-- Attachments are now ingested locally: text/code files are read for context, images receive local previews, large text files are truncated safely, and attachment status is visible in the context drawer.
+- OpenAI-compatible and Ollama tool-call responses can invoke MCP tools, pass results back to the model, and continue to a final answer. Per-turn execution is bounded to 8 MCP calls and 6 model/tool rounds. Provider-backed turns have pause/stop controls, approval checkpoints, and a bounded local run log.
+- Attachments are now ingested locally: text/code files are read for context, images receive local previews, text reads stop at 1 MiB, and attachment status is visible in the context drawer. Provider/MCP responses are capped at 10 MiB while being read.
 - Voice input uses the browser Speech Recognition API when available and gives a clear permission/support fallback when it is not.
 - Share exports now include Markdown copy/download, JSON download, and the device share sheet where supported; no remote link is implied.
 - Search is unified across threads, message text, attachment names/content, projects, project files, assistants, models, and the current Canvas draft.
 - Message and file names are rendered with safe DOM/text handling.
 - Complete thread and message histories remain accessible and are included in model context within the request-history limit.
-- Multiple tabs can refresh from local-storage changes.
+- Multiple tabs refresh from local-storage changes; a live provider run keeps its run record and saves its eventual response to the originating thread even if another tab changes the active thread.
 
 ## Run locally
 
@@ -38,7 +38,7 @@ This is still a front-end prototype: it has no user authentication, server-side 
 1. Open **Settings**, configure the provider type, base URL, model, and API key, then enable the real model. The **Global instructions** field is sent as the top-level system message on every live-model request.
 2. Open **Assistants & tools**, add an MCP Streamable HTTP endpoint, enable it, and select **Discover**.
 3. Edit an assistant, allowlist the discovered MCP tools, and enable **Network tools** permission. Read-only/destructive annotations also require the corresponding assistant permission.
-4. Tool connections require approval by default. The connection's **Auto-call** setting disables that confirmation; use it only for trusted endpoints and actions.
+4. Tool policies are configured per assistant and per tool. Ask-per-action is the default. Only server-declared read-only tools may be configured for approval once per run or automatic read-only access. Write-capable, destructive, and unclassified tools always require approval.
 
 
 ### Agent tasks and execution
@@ -51,7 +51,7 @@ Task state, step outcomes, the latest result, run count, compute metadata, and a
 
 ## Validation
 
-Validation covers Vitest source checks, Playwright browser regressions for provider authentication/system prompts, Canvas autosave/provider-backed edits/code export, runtime privacy disclosure, Ollama streaming, MCP tool execution and discovery pagination, the production build, and Electron main/preload syntax checks. GitHub Actions installs Chromium and runs the browser suite on pushes and pull requests.
+Validation covers Vitest source checks, Playwright browser regressions for provider authentication/system prompts, Canvas autosave/provider-backed edits/code export, runtime privacy disclosure, Ollama streaming, MCP tool execution and discovery pagination, thread-scoped project context, action approval, run pause/stop/recovery, the production build, and Electron main/preload syntax checks. GitHub Actions installs Chromium and runs the browser suite on pushes and pull requests.
 
 ### Forge research demo
 
@@ -74,7 +74,7 @@ The Windows workflow publishes tagged `vX.Y.Z` builds through GitHub Releases.
 
 ### Safety model
 
-Tool connections are stored locally, disabled by default, and marked confirmation-required by default. A model only sees tools that are enabled, allowlisted for the active assistant, and permitted by its network/read/write permissions. The connection-level confirmation setting defaults on; turning it off allows model-initiated calls to execute without a per-call prompt. Requests are bounded and remote endpoints must use HTTPS; plain HTTP is limited to loopback.
+Tool connections are stored locally and disabled by default. A model only sees tools that are enabled, allowlisted for the active assistant, and permitted by that assistant’s Network plus Read (verified read-only) or Write (write-capable/unclassified) permission. Approval is per assistant/tool: ask-per-action is the default; only verified read-only tools may use per-run approval or auto-read. Before an action, Forge shows its server endpoint, risk, exact arguments, and where the result will go. The run log is bounded and local. Pause takes effect at the next safe checkpoint after the current operation; Stop cancels in-flight provider/MCP requests where supported and prevents later actions, but cannot undo external side effects already completed. Interrupted runs are never replayed automatically. A retry starts a new run only after explicit confirmation. Remote endpoints must use HTTPS; plain HTTP is limited to loopback.
 
 ### Desktop shell
 

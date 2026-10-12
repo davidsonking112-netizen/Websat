@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('forgeDesktop', {
   setSecret: (value) => ipcRenderer.invoke('forge:set-secret', value),
   requestProvider: (request) => ipcRenderer.invoke('forge:provider-request', request),
   requestMcp: (request) => ipcRenderer.invoke('forge:mcp-request', request),
+  abortRemoteRequest: (requestId) => ipcRenderer.send('forge:remote-abort', String(requestId || '').slice(0, 120)),
   openFiles: () => ipcRenderer.invoke('forge:open-files'),
   notify: (title, body) => ipcRenderer.send('forge:notify', title, body),
   onMenuAction: (callback) => {

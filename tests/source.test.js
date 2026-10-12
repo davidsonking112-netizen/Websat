@@ -11,11 +11,12 @@ describe('Websat production smoke checks', () => {
     expect(() => new Script(read('app.js'))).not.toThrow();
   });
 
-  test('index exposes required interactive targets', () => {
+  test('index exposes required interactive targets and explicit approval surfaces', () => {
     const html = read('index.html');
-    for (const id of ['newChat', 'prompt', 'sendButton', 'settingsButton', 'onboardingOverlay', 'workspaceOverlay', 'contextDrawer']) {
+    for (const id of ['newChat', 'prompt', 'sendButton', 'settingsButton', 'onboardingOverlay', 'workspaceOverlay', 'contextDrawer', 'agentRunBanner', 'toolApprovalOverlay', 'threadProjectSelect']) {
       expect(html).toContain('id="' + id + '"');
     }
+    expect(html).toContain('aria-modal="true"');
   });
 
   test('unsafe static thread placeholders are not the source of recent-thread rendering', () => {
@@ -34,10 +35,14 @@ describe('Websat production smoke checks', () => {
     expect(js).toContain('localStorage.setItem(storeKey');
   });
 
-  test('tool connections default to disabled with confirmation required', () => {
+  test('MCP actions use per-tool approval and fail-closed write permissions', () => {
     const js = read('app.js');
     expect(js).toContain('enabled: false');
-    expect(js).toContain('requiresConfirmation: true');
+    expect(js).toContain('toolApprovalMode(assistant, key, tool)');
+    expect(js).toContain("return 'write/unknown'");
+    expect(js).toContain("if (risk !== 'read-only' && !assistant.permissions.write) continue");
+    expect(js).toContain('requestToolApproval({ run, connection, tool, argumentsValue, risk, destination })');
+    expect(js).not.toContain('requiresConfirmation: true');
   });
 
   test('local context, voice, sharing, and unified search surfaces are wired', () => {
@@ -54,12 +59,12 @@ describe('Websat production smoke checks', () => {
   test('real provider and MCP runtime paths are wired and guarded', () => {
     const js = read('app.js');
     expect(js).toContain('requestModel(');
-    expect(js).toContain('buildProviderMessages(input, provider.kind, replaceMessageIndex, thread, assistant)');
+    expect(js).toContain('buildProviderMessages(input, provider.kind, sourceMessageIndex, thread, assistant)');
     expect(js).toContain("'/api/chat'");
     expect(js).toContain("'/v1/chat/completions'");
     expect(js).toContain("mcpRequest(connection, 'tools/list'");
     expect(js).toContain("mcpRequest(connection, 'tools/call'");
-    expect(js).toContain('requiresConfirmation');
+    expect(js).toContain('toolPolicies');
     expect(js).toContain('completeProviderTurn(');
     expect(js).toContain('availableMcpTools(assistant)');
     expect(js).toContain('tool_choice = \'auto\'');
@@ -86,8 +91,12 @@ describe('Websat production smoke checks', () => {
     expect(main).toContain("ipcMain.on('forge:notify'");
     expect(main).toContain("ipcMain.handle('forge:provider-request'");
     expect(main).toContain("ipcMain.handle('forge:mcp-request'");
+    expect(main).toContain('async function readResponseTextLimited');
+    expect(js).toContain('receivedBytes > 10 * 1024 * 1024');
     expect(main).toContain("ipcMain.handle('forge:has-secret'");
     expect(preload).toContain("contextBridge.exposeInMainWorld('forgeDesktop'");
+    expect(preload).toContain('abortRemoteRequest');
+    expect(main).toContain("ipcMain.on('forge:remote-abort'");
     expect(js).toContain('desktop.setSecret');
     expect(js).toContain('desktop?.requestProvider');
     expect(js).not.toContain('desktop.getSecret');
@@ -102,7 +111,30 @@ describe('Websat production smoke checks', () => {
     expect(js).toContain('thread.messages.forEach((message, index)');
     expect(js).not.toContain('thread.messages.length - 36');
     expect(js).toContain('thread.messages[replaceMessageIndex] = message');
+    expect(js).toContain('sourceMessageIndex: Number.isInteger(rawRun.sourceMessageIndex) ? rawRun.sourceMessageIndex : null');
+    expect(js).toContain('thread.messages.slice(0, Math.max(0, sourceMessageIndex))');
     expect(js).toContain('simulateResponse(prompt, userIndex, index, thread.id)');
+  });
+
+  test('agent runs are bounded, recoverable, cancellable, and never replayed automatically', () => {
+    const js = read('app.js');
+    const preload = read('electron/preload.cjs');
+    expect(js).toContain('state.runs = state.runs.slice(0, 12)');
+    expect(js).toContain("run.status = 'interrupted'");
+    expect(js).toContain('No automatic replay was attempted');
+    expect(js).toContain('waitForRunCheckpoint(control)');
+    expect(js).toContain('function stopAgentRun()');
+    expect(js).toContain('Retry this complete turn?');
+    expect(preload).toContain('abortRemoteRequest');
+  });
+
+  test('project context is explicitly selected per thread and excludes unrelated projects', () => {
+    const js = read('app.js');
+    const html = read('index.html');
+    expect(js).toContain('projectId: textValue(thread.projectId)');
+    expect(js).toContain("const project = thread?.projectId ? state.projects.find");
+    expect(html).toContain('Project context for this thread');
+    expect(js).not.toContain("state.projects.filter((project) => project.instructions)");
   });
 
   test('desktop navigation and document resources are constrained', () => {

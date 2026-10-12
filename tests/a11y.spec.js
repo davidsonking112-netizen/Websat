@@ -11,6 +11,8 @@ async function seedWorkspace(page, threads, overrides = {}) {
     settings: { theme: 'light', onboardingComplete: true, ...(overrides.settings || {}) },
     ...(typeof overrides.canvas === 'string' ? { canvas: overrides.canvas } : {}),
     ...(Array.isArray(overrides.canvasHistory) ? { canvasHistory: overrides.canvasHistory } : {}),
+    ...(Array.isArray(overrides.projects) ? { projects: overrides.projects } : {}),
+    ...(Array.isArray(overrides.runs) ? { runs: overrides.runs } : {}),
     ...(overrides.assistants ? { assistants: overrides.assistants } : {}),
     ...(overrides.selectedAssistant ? { selectedAssistant: overrides.selectedAssistant } : {}),
     ...(overrides.toolConnections ? { toolConnections: overrides.toolConnections } : {}),
@@ -197,7 +199,7 @@ test('model tool calls execute only allowlisted MCP tools and feed results back 
     settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-tool-test', model: 'mock-tools', enabled: true } },
     assistants: [{
       id: 'research-assistant', name: 'Research assistant', description: '', instructions: '',
-      tools: ['test-connection::lookup'], permissions: { network: true, read: true, write: false }
+      tools: ['test-connection::lookup'], toolPolicies: { 'test-connection::lookup': 'per-run' }, permissions: { network: true, read: true, write: false }
     }],
     selectedAssistant: 'research-assistant',
     toolConnections: [{
@@ -210,6 +212,12 @@ test('model tool calls execute only allowlisted MCP tools and feed results back 
   });
   await page.locator('#prompt').fill('Look up the test phrase.');
   await page.locator('#sendButton').click();
+  await expect(page.locator('#toolApprovalOverlay')).toBeVisible();
+  await expect(page.locator('#toolApprovalArguments')).toContainText('test phrase');
+  await expect(page.locator('#toolApprovalServer')).toContainText('127.0.0.1:4321/mcp');
+  await expect(page.locator('#toolApprovalRisk')).toContainText('Read-only');
+  await expect(page.locator('#toolApprovalDataFlow')).toContainText('provider.test');
+  await page.locator('#approvalAllow').click();
   await expect(page.locator('#conversation')).toContainText('The MCP lookup found the requested result.');
   expect(mcpCall.payload.method).toBe('tools/call');
   expect(mcpCall.payload.params).toEqual({ name: 'lookup', arguments: { query: 'test phrase' } });
@@ -218,16 +226,18 @@ test('model tool calls execute only allowlisted MCP tools and feed results back 
   expect(modelCalls[0].body.tools[0].function.name).toBe('forge_mcp_0');
   expect(modelCalls[0].headers.authorization).toBe('Bearer sk-tool-test');
   expect(modelCalls[1].body.messages.some((message) => message.role === 'tool' && message.content.includes('MCP_LOOKUP_SUCCESS'))).toBe(true);
+  const savedRun = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).runs[0], storageKey);
+  expect(savedRun.status).toBe('completed');
+  expect(savedRun.events.some((event) => event.type === 'tool-approved')).toBe(true);
+  expect(savedRun.events.some((event) => event.type === 'tool-completed' && event.result.includes('MCP_LOOKUP_SUCCESS'))).toBe(true);
+  await page.locator('.nav-item[data-workspace="Runs"]').click();
+  await expect(page.locator('#overlayTitle')).toHaveText('Agent run log');
+  await expect(page.locator('#overlayBody')).toContainText('MCP_LOOKUP_SUCCESS');
 });
 
 test('default MCP confirmation prevents execution when the user declines', async ({ page }) => {
   const modelBodies = [];
-  const dialogs = [];
   let mcpHits = 0;
-  page.on('dialog', async (dialog) => {
-    dialogs.push(dialog.message());
-    await dialog.dismiss();
-  });
   await page.route('https://provider.test/v1/chat/completions', async (route) => {
     const body = JSON.parse(route.request().postData() || '{}');
     modelBodies.push(body);
@@ -251,9 +261,11 @@ test('default MCP confirmation prevents execution when the user declines', async
   });
   await page.locator('#prompt').fill('Find private data.');
   await page.locator('#sendButton').click();
+  await expect(page.locator('#toolApprovalOverlay')).toBeVisible();
+  await expect(page.locator('#toolApprovalArguments')).toContainText('private data');
+  await expect(page.locator('#toolApprovalDataFlow')).toContainText('provider.test');
+  await page.locator('#approvalDeny').click();
   await expect(page.locator('#conversation')).toContainText('The lookup was not run.');
-  expect(dialogs).toHaveLength(1);
-  expect(dialogs[0]).toContain('private data');
   expect(mcpHits).toBe(0);
   expect(modelBodies[1].messages.some((message) => message.role === 'tool' && message.content.includes('declined'))).toBe(true);
 });
@@ -723,4 +735,198 @@ test('Forge recovers an interrupted running task from persisted state on startup
   expect(recovered.runCount).toBe(5);
   expect(recovered.steps.every((step) => step.status === 'completed')).toBe(true);
   expect(recovered.logs.some((entry) => entry.message.includes('Run 5 started'))).toBe(true);
+});
+
+test('project instructions and files are sent only for the project explicitly selected on that thread', async ({ page }) => {
+  const providerBodies = [];
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    providerBodies.push(JSON.parse(route.request().postData() || '{}'));
+    return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Scoped response.' } }] }) });
+  });
+  const projects = [
+    { id: 'project-alpha', name: 'Project Alpha', description: '', instructions: 'ALPHA_ONLY_INSTRUCTIONS', memory: true, files: [{ name: 'alpha.txt', type: 'text/plain', content: 'ALPHA_ONLY_FILE', size: 15 }], folders: [] },
+    { id: 'project-beta', name: 'Project Beta', description: '', instructions: 'BETA_ONLY_INSTRUCTIONS', memory: true, files: [{ name: 'beta.txt', type: 'text/plain', content: 'BETA_ONLY_FILE', size: 14 }], folders: [] }
+  ];
+  await seedWorkspace(page, [blankThread('alpha-thread'), blankThread('beta-thread'), blankThread('unscoped-thread')], {
+    projects,
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: '', model: 'scope-test', enabled: true } }
+  });
+  await page.locator('#contextToggle').click();
+  await page.locator('#threadProjectSelect').selectOption('project-alpha');
+  await page.keyboard.press('Escape');
+  await page.locator('#prompt').fill('Question for Alpha.');
+  await page.locator('#sendButton').click();
+  await expect(page.locator('#conversation')).toContainText('Scoped response.');
+  const alphaSystem = providerBodies[0].messages[0].content;
+  expect(alphaSystem).toContain('ALPHA_ONLY_INSTRUCTIONS');
+  expect(alphaSystem).toContain('ALPHA_ONLY_FILE');
+  expect(alphaSystem).not.toContain('BETA_ONLY_INSTRUCTIONS');
+  expect(alphaSystem).not.toContain('BETA_ONLY_FILE');
+
+  await page.locator('.thread-item[data-thread-id="beta-thread"]').click();
+  await page.locator('#threadProjectSelect').selectOption('project-beta');
+  await page.keyboard.press('Escape');
+  await page.locator('#prompt').fill('Question for Beta.');
+  await page.locator('#sendButton').click();
+  await expect(page.locator('#conversation')).toContainText('Scoped response.');
+  const betaSystem = providerBodies[1].messages[0].content;
+  expect(betaSystem).toContain('BETA_ONLY_INSTRUCTIONS');
+  expect(betaSystem).toContain('BETA_ONLY_FILE');
+  expect(betaSystem).not.toContain('ALPHA_ONLY_INSTRUCTIONS');
+  expect(betaSystem).not.toContain('ALPHA_ONLY_FILE');
+
+  await page.locator('.thread-item[data-thread-id="unscoped-thread"]').click();
+  await page.locator('#prompt').fill('Question with no project.');
+  await page.locator('#sendButton').click();
+  await expect(page.locator('#conversation')).toContainText('Scoped response.');
+  expect(providerBodies[2].messages[0].content).not.toContain('ALPHA_ONLY_');
+  expect(providerBodies[2].messages[0].content).not.toContain('BETA_ONLY_');
+});
+
+test('pause takes effect between operations and resumes without repeating the completed tool call', async ({ page }) => {
+  const modelBodies = [];
+  let mcpHits = 0;
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}'); modelBodies.push(body);
+    if (modelBodies.length === 1) return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'pause-call', type: 'function', function: { name: 'forge_mcp_0', arguments: '{"query":"pause-check"}' } }] } }] }) });
+    return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Resumed after the safe checkpoint.' } }] }) });
+  });
+  await page.route('http://127.0.0.1:4341/mcp', async (route) => {
+    const cors = { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'content-type,accept,mcp-protocol-version', 'access-control-expose-headers': 'Mcp-Session-Id' };
+    if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    mcpHits += 1; const payload = JSON.parse(route.request().postData() || '{}');
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    return route.fulfill({ status: 200, headers: { ...cors, 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: payload.id, result: { content: [{ type: 'text', text: 'PAUSE_TOOL_DONE' }] } }) });
+  });
+  await seedWorkspace(page, [blankThread('pause-thread')], {
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: '', model: 'pause-test', enabled: true } },
+    assistants: [{ id: 'pause-assistant', name: 'Pause assistant', description: '', instructions: '', tools: ['pause-mcp::lookup'], toolPolicies: { 'pause-mcp::lookup': 'auto-read' }, permissions: { network: true, read: true, write: false } }],
+    selectedAssistant: 'pause-assistant',
+    toolConnections: [{ id: 'pause-mcp', name: 'Pause MCP', type: 'MCP', endpoint: 'http://127.0.0.1:4341/mcp', enabled: true, protocolVersion: '2025-03-26', tools: [{ name: 'lookup', description: 'Search', inputSchema: { type: 'object', properties: { query: { type: 'string' } } }, annotations: { readOnlyHint: true } }] }]
+  });
+  await page.locator('#prompt').fill('Run one read-only lookup.'); await page.locator('#sendButton').click();
+  await expect.poll(() => mcpHits).toBe(1);
+  await page.locator('#agentPauseButton').click();
+  await expect(page.locator('#agentRunStatus')).toContainText('Paused');
+  expect(modelBodies).toHaveLength(1); expect(mcpHits).toBe(1);
+  await page.locator('#agentPauseButton').click();
+  await expect(page.locator('#conversation')).toContainText('Resumed after the safe checkpoint.');
+  expect(modelBodies).toHaveLength(2); expect(mcpHits).toBe(1);
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).runs[0].status, storageKey)).toBe('completed');
+});
+
+test('Stop cancels an in-flight provider request and leaves a cancelled run for inspection', async ({ page }) => {
+  let providerHits = 0; let releaseProvider;
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    providerHits += 1; await new Promise((resolve) => { releaseProvider = resolve; });
+    try { await route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'This should not be saved.' } }] }) }); } catch (_) {}
+  });
+  await seedWorkspace(page, [blankThread('stop-thread')], { settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: '', model: 'stop-test', enabled: true } } });
+  await page.locator('#prompt').fill('Start a request that will be stopped.'); await page.locator('#sendButton').click();
+  await expect.poll(() => providerHits).toBe(1);
+  await page.locator('#agentStopButton').click(); releaseProvider?.();
+  await expect(page.locator('#agentRunBanner')).toBeHidden();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).runs[0].status, storageKey)).toBe('cancelled');
+  await expect(page.locator('#conversation')).not.toContainText('This should not be saved.');
+  await page.locator('.nav-item[data-workspace="Runs"]').click();
+  await expect(page.locator('#overlayBody')).toContainText('Run stopped');
+});
+
+test('restart marks an active run interrupted and retry requires explicit confirmation', async ({ page }) => {
+  let providerHits = 0;
+  await page.route('https://provider.test/v1/chat/completions', async (route) => { providerHits += 1; return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Confirmed retry completed.' } }] }) }); });
+  const thread = { ...blankThread('recovery-thread'), messages: [{ kind: 'user', content: 'Repeat this exact turn.', label: '' }] };
+  await seedWorkspace(page, [thread], {
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: '', model: 'recovery-test', enabled: true } },
+    runs: [{ id: 'stale-run', threadId: 'recovery-thread', prompt: 'Repeat this exact turn.', assistantId: 'default', assistantName: 'Forge', projectId: '', provider: 'recovery-test · provider.test', status: 'running', startedAt: new Date().toISOString(), endedAt: '', events: [{ type: 'tool-completed', message: 'A previous action may have completed.' }] }]
+  });
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).runs[0].status, storageKey)).toBe('interrupted');
+  await page.locator('.nav-item[data-workspace="Runs"]').click();
+  await expect(page.locator('#overlayBody')).toContainText('Interrupted');
+  await expect(page.locator('#overlayBody')).toContainText('Some approved actions may already have completed');
+  await expect(page.locator('[data-retry-run="stale-run"]')).toBeVisible(); expect(providerHits).toBe(0);
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.locator('[data-retry-run="stale-run"]').click();
+  await expect(page.locator('#conversation')).toContainText('Confirmed retry completed.'); expect(providerHits).toBe(1);
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).runs[0].status, storageKey)).toBe('completed');
+  const runs = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).runs, storageKey);
+  expect(runs[0].retryOf).toBe('stale-run'); expect(runs.find((run) => run.id === 'stale-run').status).toBe('interrupted');
+});
+
+test('cross-tab storage updates preserve the live run and its eventual result', async ({ page, context }) => {
+  let providerHits = 0; let releaseProvider;
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    providerHits += 1; await new Promise((resolve) => { releaseProvider = resolve; });
+    try { await route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Live run survived the other tab.' } }] }) }); } catch (_) {}
+  });
+  await seedWorkspace(page, [blankThread('cross-tab-run')], { settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: '', model: 'cross-tab-test', enabled: true } } });
+  await page.locator('#prompt').fill('Keep this live run while another tab updates state.'); await page.locator('#sendButton').click();
+  await expect.poll(() => providerHits).toBe(1);
+  const other = await context.newPage(); await other.goto('/?forgeDemo=all');
+  await other.evaluate((key) => { const saved = JSON.parse(localStorage.getItem(key)); saved.threads.unshift({ id: 'other-tab-thread', title: 'Other tab thread', messages: [], attachments: [] }); saved.activeId = 'other-tab-thread'; localStorage.setItem(key, JSON.stringify(saved)); }, storageKey);
+  await expect(page.locator('.thread-item[data-thread-id="other-tab-thread"]')).toBeVisible(); releaseProvider?.();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).runs.find((run) => run.prompt.includes('Keep this live run')).status, storageKey)).toBe('completed');
+  expect(await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).threads.find((thread) => thread.id === 'cross-tab-run').messages.some((message) => message.content.includes('Live run survived the other tab.')), storageKey)).toBe(true);
+  expect(await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).threads.some((thread) => thread.id === 'other-tab-thread'), storageKey)).toBe(true); await other.close();
+});
+
+test('oversized browser text imports read only the configured preview limit', async ({ page }) => {
+  await seedWorkspace(page, [blankThread('bounded-file')]); await page.locator('#attachButton').click();
+  await page.locator('#fileInput').setInputFiles({ name: 'large.txt', mimeType: 'text/plain', buffer: Buffer.alloc(1024 * 1024 + 4096, 97) });
+  await expect.poll(() => page.evaluate((key) => { const attachment = JSON.parse(localStorage.getItem(key)).threads[0].attachments[0]; return [attachment?.content?.length, attachment?.truncated]; }, storageKey)).toEqual([1024 * 1024, true]);
+});
+
+test('provider regeneration uses only context before the target user turn', async ({ page }) => {
+  let observedBody;
+  await page.route('https://provider.test/v1/chat/completions', async (route) => { observedBody = JSON.parse(route.request().postData() || '{}'); return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Regenerated first answer.' } }] }) }); });
+  const thread = { id: 'provider-regenerate', title: 'Provider regeneration', attachments: [], messages: [
+    { kind: 'user', content: 'First-turn question only.', label: '' }, { kind: 'assistant', content: 'Original first answer.', label: 'Forge Local' },
+    { kind: 'user', content: 'Later private question.', label: '' }, { kind: 'assistant', content: 'Later answer remains.', label: 'Forge Local' }
+  ] };
+  await seedWorkspace(page, [thread], { settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: '', model: 'regenerate-test', enabled: true } } });
+  await page.locator('#conversation .message[data-index="1"] [data-message-action="regenerate"]').click();
+  await expect(page.locator('#conversation')).toContainText('Regenerated first answer.');
+  expect(observedBody.messages.filter((message) => message.role === 'user').map((message) => message.content)).toEqual(['First-turn question only.']);
+  expect(JSON.stringify(observedBody.messages)).not.toContain('Later private question.'); expect(JSON.stringify(observedBody.messages)).not.toContain('Later answer remains.');
+  expect(await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).threads[0].messages.map((message) => message.content), storageKey)).toEqual(['First-turn question only.', 'Regenerated first answer.', 'Later private question.', 'Later answer remains.']);
+});
+
+test('local preview uses project instructions only when this thread explicitly selects that project', async ({ page }) => {
+  const project = { id: 'private-project', name: 'Private project', description: '', instructions: 'PROJECT_SCOPE_SENTINEL', memory: true, files: [], folders: [] };
+  await seedWorkspace(page, [blankThread('unscoped-local')], { projects: [project], assistants: [{ id: 'empty-assistant', name: 'Empty assistant', description: '', instructions: '', tools: [], permissions: {} }], selectedAssistant: 'empty-assistant' });
+  await page.locator('#prompt').fill('Explain a plain local preview.'); await page.locator('#sendButton').click();
+  await expect(page.locator('#conversation')).toContainText('local preview simulates the complete flow');
+  await expect(page.locator('#conversation')).not.toContainText('PROJECT_SCOPE_SENTINEL');
+});
+
+
+test('local preview serializes fast sends instead of losing the first response', async ({ page }) => {
+  await seedWorkspace(page, [blankThread('local-serialized')], {
+    assistants: [{ id: 'empty-local', name: 'Empty local', description: '', instructions: '', tools: [], permissions: {} }],
+    selectedAssistant: 'empty-local'
+  });
+  await page.locator('#prompt').fill('First local turn.');
+  await page.locator('#sendButton').click();
+  await page.locator('#prompt').fill('Second local turn while the first is pending.');
+  await page.locator('#sendButton').click();
+  await expect(page.locator('#toast')).toContainText('A response is active or starting');
+  await expect(page.locator('#conversation')).toContainText('local preview simulates the complete flow');
+  const messages = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).threads[0].messages, storageKey);
+  expect(messages.map((message) => message.kind)).toEqual(['user', 'assistant']);
+  expect(messages[0].content).toBe('First local turn.');
+});
+
+
+test('provider streams larger than 10 MiB are rejected without completing the turn', async ({ page }) => {
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    return route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'x'.repeat(10 * 1024 * 1024 + 128) });
+  });
+  await seedWorkspace(page, [blankThread('response-cap')], {
+    settings: { provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: '', model: 'response-cap-test', enabled: true } }
+  });
+  await page.locator('#prompt').fill('Request a response that exceeds the configured safety limit.');
+  await page.locator('#sendButton').click();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).runs[0].status, storageKey)).toBe('failed');
+  await page.locator('.nav-item[data-workspace="Runs"]').click();
+  await expect(page.locator('#overlayBody')).toContainText('Provider response exceeded the 10 MB safety limit');
 });

@@ -22,6 +22,15 @@
   const overlayBody = byId('overlayBody');
   const fileInput = byId('fileInput');
   const attachmentTray = byId('attachmentTray');
+  const agentRunBanner = byId('agentRunBanner');
+  const agentRunStatus = byId('agentRunStatus');
+  const toolApprovalOverlay = byId('toolApprovalOverlay');
+  const toolApprovalArguments = byId('toolApprovalArguments');
+  let pendingToolApproval = null;
+  let activeRunControl = null;
+  let localResponsePending = false;
+  let activeLocalTyping = null;
+  let agentRequestSequence = 0;
   const recentSection = $('.recent-section');
   const desktop = globalThis.forgeDesktop || null;
   let providerKeySaved = false;
@@ -56,6 +65,7 @@
     activeId: 'welcome',
     canvas: defaultCanvas,
     canvasHistory: [],
+    runs: [],
     projects: [defaultProject()],
     selectedModel: 'Forge Local',
     selectedAssistant: 'Forge Local',
@@ -133,6 +143,7 @@
     return {
       id: textValue(thread.id, makeId('thread')),
       title: textValue(thread.title, 'Untitled conversation').slice(0, 120),
+      projectId: textValue(thread.projectId).slice(0, 120),
       messages,
       attachments
     };
@@ -164,7 +175,47 @@
     };
   }
 
-  function normalizeState(raw) {
+  function sanitizeLogText(value, limit = 2400) {
+    return textValue(value).replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
+      .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization|credential)\s*[:=]\s*)([^\s,;]+)/gi, '$1[REDACTED]')
+      .slice(0, limit);
+  }
+
+  function normalizeRunRecord(rawRun) {
+    if (!rawRun || typeof rawRun !== 'object') return null;
+    const statuses = ['running', 'pausing', 'paused', 'waiting_approval', 'completed', 'failed', 'cancelled', 'interrupted'];
+    const events = Array.isArray(rawRun.events) ? rawRun.events.slice(-40).map((event) => ({
+      type: textValue(event?.type, 'event').slice(0, 40),
+      at: textValue(event?.at).slice(0, 40),
+      message: sanitizeLogText(event?.message, 1000),
+      server: sanitizeLogText(event?.server, 160),
+      endpoint: sanitizeLogText(event?.endpoint, 500),
+      tool: sanitizeLogText(event?.tool, 160),
+      risk: sanitizeLogText(event?.risk, 40),
+      destination: sanitizeLogText(event?.destination, 300),
+      arguments: sanitizeLogText(event?.arguments, 2500),
+      result: sanitizeLogText(event?.result, 2500),
+      approved: typeof event?.approved === 'boolean' ? event.approved : null
+    })) : [];
+    return {
+      id: textValue(rawRun.id, makeId('run')).slice(0, 120),
+      threadId: textValue(rawRun.threadId).slice(0, 120),
+      prompt: sanitizeLogText(rawRun.prompt, 12000),
+      assistantId: textValue(rawRun.assistantId).slice(0, 120),
+      assistantName: sanitizeLogText(rawRun.assistantName, 80),
+      projectId: textValue(rawRun.projectId).slice(0, 120),
+      provider: sanitizeLogText(rawRun.provider, 180),
+      status: statuses.includes(rawRun.status) ? rawRun.status : 'interrupted',
+      startedAt: textValue(rawRun.startedAt).slice(0, 40),
+      endedAt: textValue(rawRun.endedAt).slice(0, 40),
+      replaceMessageIndex: Number.isInteger(rawRun.replaceMessageIndex) ? rawRun.replaceMessageIndex : null,
+      sourceMessageIndex: Number.isInteger(rawRun.sourceMessageIndex) ? rawRun.sourceMessageIndex : null,
+      retryOf: textValue(rawRun.retryOf).slice(0, 120),
+      events
+    };
+  }
+
+  function normalizeState(raw, { recoverRuns = false } = {}) {
     const base = defaultState();
     if (!raw || typeof raw !== 'object') return base;
 
@@ -178,6 +229,17 @@
     const history = Array.isArray(raw.canvasHistory)
       ? raw.canvasHistory.map((h) => ({ content: textValue(h?.content), at: textValue(h?.at) })).filter((h) => h.content).slice(0, 50)
       : [];
+    const runs = Array.isArray(raw.runs) ? raw.runs.slice(0, 12).map(normalizeRunRecord).filter(Boolean) : [];
+    if (recoverRuns) {
+      for (const run of runs) {
+        if (['running', 'pausing', 'paused', 'waiting_approval'].includes(run.status)) {
+          run.status = 'interrupted';
+          run.endedAt = new Date().toISOString();
+          run.events.push({ type: 'recovery', at: run.endedAt, message: 'App restarted before this run finished. No automatic replay was attempted; retry only after reviewing possible completed actions.', server: '', endpoint: '', tool: '', risk: '', destination: '', arguments: '', result: '', approved: null });
+          run.events = run.events.slice(-40);
+        }
+      }
+    }
 
     return {
       version: stateVersion,
@@ -185,6 +247,7 @@
       activeId,
       canvas: textValue(raw.canvas, defaultCanvas),
       canvasHistory: history,
+      runs,
       projects,
       selectedModel: textValue(raw.selectedModel, 'Forge Local'),
       selectedAssistant: textValue(raw.selectedAssistant, 'Forge Local'),
@@ -193,7 +256,8 @@
         name: textValue(a?.name, 'Custom assistant').slice(0, 80),
         description: textValue(a?.description, 'Custom local assistant').slice(0, 200),
         instructions: textValue(a?.instructions).slice(0, 12000),
-        tools: Array.isArray(a?.tools) ? a.tools.map((x) => textValue(x).slice(0, 80)).filter(Boolean) : [],
+        tools: Array.isArray(a?.tools) ? a.tools.map((x) => textValue(x).slice(0, 160)).filter(Boolean) : [],
+        toolPolicies: a?.toolPolicies && typeof a.toolPolicies === 'object' ? Object.fromEntries(Object.entries(a.toolPolicies).slice(0, 100).map(([key, value]) => [textValue(key).slice(0, 160), ['ask', 'per-run', 'auto-read'].includes(value) ? value : 'ask'])) : {},
         permissions: a?.permissions && typeof a.permissions === 'object' ? a.permissions : {}
       })).filter((a) => a.name) : base.assistants,
       toolConnections: Array.isArray(raw.toolConnections) ? raw.toolConnections.map((t) => ({
@@ -202,7 +266,6 @@
         type: textValue(t?.type, 'MCP').slice(0, 40),
         endpoint: textValue(t?.endpoint).slice(0, 500),
         enabled: Boolean(t?.enabled),
-        requiresConfirmation: t?.requiresConfirmation !== false,
         sessionId: textValue(t?.sessionId).slice(0, 300),
         protocolVersion: textValue(t?.protocolVersion).slice(0, 40),
         tools: Array.isArray(t?.tools) ? t.tools.slice(0, 100) : []
@@ -224,6 +287,8 @@
       }
     };
   }
+
+  let recoveredRunsOnLoad = false;
 
   function loadState() {
     const demoMode = new URLSearchParams(window.location.search).get('forgeDemo');
@@ -250,7 +315,17 @@
       const raw = localStorage.getItem(storeKey);
       if (!raw) return defaultState();
       try {
-        return normalizeState(JSON.parse(raw));
+        const parsed = JSON.parse(raw);
+        recoveredRunsOnLoad = Array.isArray(parsed?.runs) && parsed.runs.some((run) => ['running', 'pausing', 'paused', 'waiting_approval'].includes(run?.status));
+        const normalized = normalizeState(parsed, { recoverRuns: true });
+        if (recoveredRunsOnLoad) {
+          try {
+            const snapshot = JSON.parse(JSON.stringify(normalized));
+            if (desktop) snapshot.settings.provider.apiKey = '';
+            localStorage.setItem(storeKey, JSON.stringify(snapshot));
+          } catch (_) {}
+        }
+        return normalized;
       } catch (error) {
         try {
           localStorage.setItem(storeKey + '-corrupt-' + Date.now(), raw.slice(0, 200000));
@@ -284,6 +359,7 @@
         if (desktop) compact.settings.provider.apiKey = '';
         compact.threads.forEach((thread) => thread.attachments?.forEach((file) => { delete file.content; delete file.preview; file.truncated = true; }));
         compact.projects.forEach((project) => project.files?.forEach((file) => { delete file.content; delete file.preview; file.truncated = true; }));
+        compact.runs = (compact.runs || []).slice(0, 8).map((run) => ({ ...run, events: (run.events || []).slice(-20).map((event) => ({ ...event, arguments: textValue(event.arguments).slice(0, 500), result: textValue(event.result).slice(0, 500) })) }));
         localStorage.setItem(storeKey, JSON.stringify(compact));
         showToast('Storage is full; attachment bodies were omitted from the saved copy');
         renderThreadList();
@@ -300,6 +376,222 @@
     return state.assistants.find((assistant) => assistant.id === state.selectedAssistant || assistant.name === state.selectedAssistant) || state.assistants[0];
   }
 
+  const RUN_TERMINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
+
+  function runStatusLabel(status) {
+    return ({ running: 'Running', pausing: 'Pausing after current step', paused: 'Paused', waiting_approval: 'Waiting for approval', completed: 'Completed', failed: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted' })[status] || 'Interrupted';
+  }
+
+  function recordRunEvent(runId, detail) {
+    const run = state.runs.find((item) => item.id === runId);
+    if (!run) return;
+    const serialize = (value, max = 2400) => {
+      const scrub = (item) => {
+        if (Array.isArray(item)) return item.map(scrub);
+        if (item && typeof item === 'object') return Object.fromEntries(Object.entries(item).map(([key, child]) => [/api[_-]?key|token|password|secret|authorization|credential/i.test(key) ? key : key, /api[_-]?key|token|password|secret|authorization|credential/i.test(key) ? '[REDACTED]' : scrub(child)]));
+        return typeof item === 'string' ? sanitizeLogText(item, max) : item;
+      };
+      const clean = scrub(value);
+      return sanitizeLogText(typeof clean === 'string' ? clean : JSON.stringify(clean ?? {}), max);
+    };
+    const event = {
+      type: textValue(detail.type, 'event').slice(0, 40),
+      at: new Date().toISOString(),
+      message: sanitizeLogText(detail.message, 1000),
+      server: sanitizeLogText(detail.server, 160),
+      endpoint: sanitizeLogText(detail.endpoint, 500),
+      tool: sanitizeLogText(detail.tool, 160),
+      risk: sanitizeLogText(detail.risk, 40),
+      destination: sanitizeLogText(detail.destination, 300),
+      arguments: detail.arguments === undefined ? '' : serialize(detail.arguments, 2500),
+      result: detail.result === undefined ? '' : serialize(detail.result, 2500),
+      approved: typeof detail.approved === 'boolean' ? detail.approved : null
+    };
+    run.events.push(event);
+    run.events = run.events.slice(-40);
+    persist();
+    renderAgentRunControls();
+  }
+
+  function setAgentRunStatus(runId, status, note = '') {
+    const run = state.runs.find((item) => item.id === runId);
+    if (!run) return;
+    run.status = status;
+    if (RUN_TERMINAL.has(status)) run.endedAt = new Date().toISOString();
+    if (note) run.statusText = sanitizeLogText(note, 300);
+    persist();
+    renderAgentRunControls();
+  }
+
+  function createAgentRun(thread, prompt, assistant, replaceMessageIndex = null, retryOf = '', sourceMessageIndex = null) {
+    const provider = state.settings.provider || {};
+    const endpoint = providerUrlInfo(provider.baseUrl);
+    const run = {
+      id: makeId('run'), threadId: thread.id, prompt: textValue(prompt).slice(0, 12000),
+      assistantId: assistant?.id || '', assistantName: textValue(assistant?.name, 'Forge'),
+      projectId: thread.projectId || '', provider: textValue(provider.model, 'Configured provider') + (endpoint.host ? ' · ' + endpoint.host : ''),
+      status: 'running', startedAt: new Date().toISOString(), endedAt: '',
+      replaceMessageIndex: Number.isInteger(replaceMessageIndex) ? replaceMessageIndex : null,
+      sourceMessageIndex: Number.isInteger(sourceMessageIndex) ? sourceMessageIndex : null,
+      retryOf: textValue(retryOf), events: []
+    };
+    state.runs.unshift(run);
+    state.runs = state.runs.slice(0, 12);
+    const control = { id: run.id, controller: new AbortController(), pauseRequested: false, paused: false, resumeWaiter: null, approvedTools: new Set(), requestSequence: 0, activity: 'Starting model request', stopRequested: false };
+    activeRunControl = control;
+    persist();
+    recordRunEvent(run.id, { type: 'run-started', message: 'Run started; no automatic actions will be replayed after interruption.', destination: run.provider + (run.projectId ? ' · project scope selected' : ' · no project context') });
+    renderAgentRunControls();
+    return { run, control };
+  }
+
+  function renderAgentRunControls() {
+    if (!agentRunBanner || !agentRunStatus) return;
+    if (!activeRunControl) { agentRunBanner.hidden = true; return; }
+    const run = state.runs.find((item) => item.id === activeRunControl.id);
+    if (!run) { agentRunBanner.hidden = true; return; }
+    agentRunBanner.hidden = false;
+    agentRunStatus.textContent = runStatusLabel(run.status) + ' · ' + (activeRunControl.activity || run.assistantName);
+    const pause = byId('agentPauseButton');
+    if (pause) pause.textContent = activeRunControl.paused || activeRunControl.pauseRequested ? 'Resume' : 'Pause after current step';
+    const stop = byId('agentStopButton');
+    if (stop) stop.disabled = activeRunControl.stopRequested || RUN_TERMINAL.has(run.status);
+  }
+
+  function makeRunAbortError() {
+    const error = new Error('Agent run stopped by the user');
+    error.name = 'AbortError';
+    return error;
+  }
+
+  async function waitForRunCheckpoint(control) {
+    if (control.controller.signal.aborted || control.stopRequested) throw makeRunAbortError();
+    if (!control.pauseRequested) return;
+    control.paused = true;
+    control.activity = 'Paused safely between operations';
+    setAgentRunStatus(control.id, 'paused');
+    recordRunEvent(control.id, { type: 'paused', message: 'Paused at a safe checkpoint; no new model or tool request will start.' });
+    await new Promise((resolve) => { control.resumeWaiter = resolve; });
+    control.resumeWaiter = null;
+    control.paused = false;
+    if (control.controller.signal.aborted || control.stopRequested) throw makeRunAbortError();
+    control.pauseRequested = false;
+    control.activity = 'Resumed';
+    setAgentRunStatus(control.id, 'running');
+    recordRunEvent(control.id, { type: 'resumed', message: 'Run resumed by the user.' });
+  }
+
+  function pauseOrResumeAgentRun() {
+    const control = activeRunControl;
+    if (!control || control.stopRequested) return;
+    if (control.paused || control.pauseRequested) {
+      control.pauseRequested = false;
+      control.paused = false;
+      const resume = control.resumeWaiter;
+      control.resumeWaiter = null;
+      resume?.();
+      control.activity = 'Resuming';
+      recordRunEvent(control.id, { type: 'resume-requested', message: 'User resumed the run.' });
+      if (state.runs.find((run) => run.id === control.id)?.status === 'pausing') setAgentRunStatus(control.id, 'running');
+    } else {
+      control.pauseRequested = true;
+      control.activity = 'Pause requested; finishing the current operation';
+      setAgentRunStatus(control.id, 'pausing');
+      recordRunEvent(control.id, { type: 'pause-requested', message: 'Pause requested; the current network operation may finish, then the run will wait.' });
+    }
+    renderAgentRunControls();
+  }
+
+  function stopAgentRun() {
+    const control = activeRunControl;
+    if (!control || control.stopRequested) return;
+    control.stopRequested = true;
+    control.activity = 'Stopping · no further actions will start';
+    control.controller.abort();
+    if (pendingToolApproval?.runId === control.id) settleToolApproval(false);
+    const resume = control.resumeWaiter;
+    control.resumeWaiter = null;
+    resume?.();
+    recordRunEvent(control.id, { type: 'stop-requested', message: 'Stop requested. In-flight network operations are cancelled where supported; completed external side effects are not rolled back.' });
+    renderAgentRunControls();
+  }
+
+  function safeEndpointLabel(endpoint) {
+    try { const url = new URL(endpoint); return url.origin + url.pathname + (url.search ? '?[query hidden]' : ''); }
+    catch (_) { return 'Configured MCP endpoint'; }
+  }
+
+  function requestToolApproval({ run, connection, tool, argumentsValue, risk, destination }) {
+    return new Promise((resolve) => {
+      if (pendingToolApproval) settleToolApproval(false);
+      pendingToolApproval = { resolve, runId: run?.id || '', connection, tool, focusTarget: document.activeElement };
+      byId('toolApprovalTitle').textContent = 'Allow “' + tool.name + '” on “' + connection.name + '”?';
+      byId('toolApprovalDescription').textContent = 'Review the exact action and arguments before Forge sends this request.';
+      byId('toolApprovalServer').textContent = safeEndpointLabel(connection.endpoint);
+      byId('toolApprovalRisk').textContent = risk === 'read-only' ? 'Read-only (server-declared)' : risk === 'destructive' ? 'Destructive · requires approval for every action' : 'Write-capable or unclassified · requires approval for every action';
+      byId('toolApprovalDataFlow').textContent = destination;
+      toolApprovalArguments.textContent = JSON.stringify(argumentsValue, null, 2);
+      byId('approvalStopRun').hidden = !run;
+      toolApprovalOverlay.hidden = false;
+      toolApprovalOverlay.setAttribute('aria-hidden', 'false');
+      if (run) setAgentRunStatus(run.id, 'waiting_approval');
+      byId('approvalAllow').focus();
+    });
+  }
+
+  function settleToolApproval(approved) {
+    const pending = pendingToolApproval;
+    if (!pending) return;
+    pendingToolApproval = null;
+    toolApprovalOverlay.hidden = true;
+    toolApprovalOverlay.setAttribute('aria-hidden', 'true');
+    if (pending.runId && activeRunControl?.id === pending.runId && !activeRunControl.controller.signal.aborted) {
+      setAgentRunStatus(pending.runId, activeRunControl.pauseRequested ? 'pausing' : 'running');
+    }
+    pending.resolve(Boolean(approved));
+    if (pending.focusTarget?.isConnected) pending.focusTarget.focus();
+  }
+
+  function renderRunLog() {
+    const cards = state.runs.map((run) => {
+      const thread = state.threads.find((item) => item.id === run.threadId);
+      const events = run.events.map((event) => '<details class="run-event"><summary><span class="run-event-type">' + escapeHtml(event.type) + '</span> ' + escapeHtml(event.message || event.tool || event.result || 'Run event') + '</summary><div class="run-event-body">' +
+        (event.server ? '<p><strong>Server:</strong> ' + escapeHtml(event.server) + '</p>' : '') +
+        (event.endpoint ? '<p><strong>Endpoint:</strong> ' + escapeHtml(event.endpoint) + '</p>' : '') +
+        (event.risk ? '<p><strong>Risk:</strong> ' + escapeHtml(event.risk) + '</p>' : '') +
+        (event.destination ? '<p><strong>Data flow:</strong> ' + escapeHtml(event.destination) + '</p>' : '') +
+        (event.arguments ? '<strong>Arguments</strong><pre>' + escapeHtml(event.arguments) + '</pre>' : '') +
+        (event.result ? '<strong>Result</strong><pre>' + escapeHtml(event.result) + '</pre>' : '') + '</div></details>').join('');
+      const canRetry = ['failed', 'cancelled', 'interrupted'].includes(run.status) && thread && run.prompt;
+      return '<article class="run-card"><header><div><strong>' + escapeHtml(thread?.title || 'Deleted thread') + '</strong><small>' + escapeHtml(run.assistantName) + ' · ' + escapeHtml(run.provider) + '</small></div><span class="run-status status-' + escapeAttribute(run.status) + '">' + escapeHtml(runStatusLabel(run.status)) + '</span></header>' +
+        '<p class="run-card-meta">' + escapeHtml(run.startedAt ? new Date(run.startedAt).toLocaleString() : 'Unknown start') + (run.projectId ? ' · scoped project' : ' · no project context') + '</p>' +
+        (run.status === 'interrupted' ? '<p class="run-warning">This run was not resumed. Some approved actions may already have completed; retrying may repeat them.</p>' : '') +
+        (events ? '<div class="run-event-list">' + events + '</div>' : '<p class="settings-copy">No run events recorded.</p>') +
+        (canRetry ? '<button class="overlay-action run-retry" data-retry-run="' + escapeAttribute(run.id) + '" type="button">Review and retry turn</button>' : '') + '</article>';
+    }).join('');
+    openOverlay('Agent run log', 'LOCAL AUDIT · STORED ON THIS DEVICE', '<p class="settings-copy">Run history is bounded and stored locally. Retries always start a new run after explicit confirmation; completed external actions are not rolled back.</p><div class="run-list">' + (cards || '<p class="empty-overlay">No agent runs yet. Provider-backed turns will be recorded here.</p>') + '</div>');
+    $$('[data-retry-run]', overlayBody).forEach((button) => button.addEventListener('click', () => retryAgentRun(button.dataset.retryRun)));
+  }
+
+  function retryAgentRun(runId) {
+    if (activeRunControl) { showToast('Stop or finish the active run before retrying'); return; }
+    const previous = state.runs.find((run) => run.id === runId);
+    const thread = state.threads.find((item) => item.id === previous?.threadId);
+    if (!previous || !thread || !previous.prompt) return;
+    const accepted = window.confirm('Retry this complete turn? Previously approved MCP actions may run again. Forge cannot roll back external side effects. The retry will use the current provider, assistant, project scope, and permissions.');
+    if (!accepted) return;
+    closeOverlay();
+    renderThread(thread);
+    let sourceMessageIndex = previous.sourceMessageIndex;
+    if (!Number.isInteger(sourceMessageIndex)) {
+      const anchor = Number.isInteger(previous.replaceMessageIndex) ? previous.replaceMessageIndex : thread.messages.length;
+      for (let index = Math.min(anchor - 1, thread.messages.length - 1); index >= 0; index -= 1) {
+        if (thread.messages[index].kind === 'user' && (Number.isInteger(previous.replaceMessageIndex) || thread.messages[index].content === previous.prompt)) { sourceMessageIndex = index; break; }
+      }
+    }
+    simulateResponse(previous.prompt, sourceMessageIndex, previous.replaceMessageIndex, thread.id, { retryOf: previous.id });
+  }
+
   function applyTheme() {
     const theme = state.settings?.theme || 'system';
     document.documentElement.dataset.theme = theme;
@@ -314,7 +606,7 @@
       `<div class="settings-panel"><section><h3>Appearance</h3><label class="setting-row"><span><strong>Theme</strong><small>Choose light, dark, or follow your device.</small></span><select id="themeSelect"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><label class="setting-row"><span><strong>Reduce motion</strong><small>Prefer less animation and transition.</small></span><input id="reduceMotion" type="checkbox" /></label></section>
       <section><h3>System prompt</h3><p class="settings-copy">Instructions added to every real-model request, before assistant and project instructions. This does not affect the local preview.</p><label class="setting-row stacked"><span><strong>Global instructions</strong></span><textarea id="systemPrompt" class="project-instructions" maxlength="12000" rows="5" placeholder="Set the role, tone, constraints, and response style for Forge."></textarea></label></section>
       <section><h3>Model provider</h3><p class="settings-copy">Connect Ollama or an OpenAI-compatible endpoint. Use HTTPS for remote services and loopback HTTP for local services. In browser mode, the key stays in this browser profile; in desktop mode, it is protected with Electron safeStorage.</p><label class="setting-row"><span><strong>Enable real model</strong><small>When off, Forge uses its deterministic local preview.</small></span><input id="providerEnabled" type="checkbox" /></label><label class="setting-row"><span><strong>Provider</strong><small>Ollama uses /api/chat; OpenAI-compatible uses /v1/chat/completions.</small></span><select id="providerKind"><option value="openai">OpenAI-compatible</option><option value="ollama">Ollama</option></select></label><label class="setting-row stacked"><span><strong>Base URL</strong><small>Example: http://localhost:11434 for Ollama.</small></span><input id="providerBaseUrl" type="url" placeholder="https://api.example.com/v1" /></label><label class="setting-row stacked"><span><strong>Model</strong></span><input id="providerModel" type="text" placeholder="llama3.2 or gpt-4o-mini" /></label><label class="setting-row stacked"><span><strong>API key</strong><small>Leave blank to keep the saved key. Keys are excluded from exports.</small></span><input id="providerApiKey" type="password" autocomplete="new-password" placeholder="${providerKeySaved || provider.apiKey ? 'Saved key · leave blank to keep' : 'Optional API key'}" /></label><label class="setting-row"><span><strong>Remove saved API key</strong><small>Explicitly delete the provider key from this device.</small></span><input id="removeProviderKey" type="checkbox" /></label><button class="overlay-action" id="testProvider" type="button">Test connection</button></section>
-      <section><h3>Safety</h3><p class="settings-copy">Only allowlisted tools from enabled MCP connections are offered to the model. Calls require confirmation by default.</p></section><button class="canvas-save" id="saveSettings" type="button">Save settings</button></div>`
+      <section><h3>Safety</h3><p class="settings-copy">Approval is configured per assistant and per tool. Every action is reviewed by default; only tools explicitly annotated read-only may use per-run or auto-allow policies. Write-capable, destructive, and unknown tools always require approval.</p></section><button class="canvas-save" id="saveSettings" type="button">Save settings</button></div>`
     );
     byId('themeSelect').value = state.settings.theme;
     byId('reduceMotion').checked = state.settings.reduceMotion;
@@ -327,7 +619,7 @@
     const providerSection = byId('providerEnabled')?.closest('section');
     const providerDisclosure = document.createElement('p');
     providerDisclosure.className = 'settings-copy';
-    providerDisclosure.textContent = 'When enabled, prompts, recent thread history, and readable attachment text are sent to this endpoint. Check that provider’s privacy terms before connecting.';
+    providerDisclosure.textContent = 'When enabled, prompts, recent thread history, thread attachments, and—only if explicitly selected for this thread while project memory is on—project instructions and readable project files are sent to this endpoint. Check that provider’s privacy terms before connecting.';
     providerSection?.insertBefore(providerDisclosure, byId('providerEnabled').closest('label'));
     byId('testProvider').addEventListener('click', async () => {
       const draft = readProviderForm();
@@ -378,7 +670,7 @@
         '<button class="overlay-list-item" data-assistant-id="' + escapeAttribute(assistant.id) + '" type="button"><span class="assistant-avatar">✦</span><span><strong>' + escapeHtml(assistant.name) + '</strong><small>' + escapeHtml(assistant.description) + '</small></span><span class="overlay-action">' + (selectedAssistant()?.id === assistant.id ? 'Active' : 'Use') + '</span></button>'
       ).join('') + '</div>' +
       '<div class="tool-connections"><div class="assistant-toolbar"><strong>Tool / MCP connections</strong><button class="overlay-action" id="addToolConnection">+ Add</button></div>' +
-      (state.toolConnections.length ? state.toolConnections.map((tool) => '<div class="tool-connection"><span><strong>' + escapeHtml(tool.name) + '</strong><small>' + escapeHtml(tool.type) + ' · ' + (tool.enabled ? 'Enabled' : 'Disabled') + (tool.requiresConfirmation ? ' · confirmation required' : ' · auto-call allowed') + ' · ' + (tool.tools?.length || 0) + ' tools</small></span><div class="tool-connection-actions"><button class="overlay-action" data-tool-discover="' + escapeAttribute(tool.id) + '" type="button">Discover</button><button class="overlay-action" data-tool-toggle="' + escapeAttribute(tool.id) + '" type="button">' + (tool.enabled ? 'Disable' : 'Enable') + '</button><button class="overlay-action" data-tool-confirmation="' + escapeAttribute(tool.id) + '" type="button">' + (tool.requiresConfirmation ? 'Confirm calls' : 'Auto-call') + '</button></div></div>' + (tool.tools || []).map((item) => '<button class="mcp-tool" data-tool-call="' + escapeAttribute(tool.id) + '" data-tool-name="' + escapeAttribute(item.name) + '" type="button"><strong>' + escapeHtml(item.name) + '</strong><small>' + escapeHtml(item.description || 'No description') + '</small><span>Call</span></button>').join('')).join('') : '<p class="empty-overlay">No tool connections yet. Add one when you are ready to connect an MCP server.</p>') +
+      (state.toolConnections.length ? state.toolConnections.map((tool) => '<div class="tool-connection"><span><strong>' + escapeHtml(tool.name) + '</strong><small>' + escapeHtml(tool.type) + ' · ' + (tool.enabled ? 'Enabled' : 'Disabled') + ' · ' + (tool.tools?.length || 0) + ' tools · approval is configured per assistant/tool</small></span><div class="tool-connection-actions"><button class="overlay-action" data-tool-discover="' + escapeAttribute(tool.id) + '" type="button">Discover</button><button class="overlay-action" data-tool-toggle="' + escapeAttribute(tool.id) + '" type="button">' + (tool.enabled ? 'Disable' : 'Enable') + '</button></div></div>' + (tool.tools || []).map((item) => '<button class="mcp-tool" data-tool-call="' + escapeAttribute(tool.id) + '" data-tool-name="' + escapeAttribute(item.name) + '" type="button"><strong>' + escapeHtml(item.name) + '</strong><small>' + escapeHtml(item.description || 'No description') + '</small><span>Call</span></button>').join('')).join('') : '<p class="empty-overlay">No tool connections yet. Add one when you are ready to connect an MCP server.</p>') +
       '</div>'
     );
     $$('[data-assistant-id]').forEach((button) => button.addEventListener('click', () => editAssistant(button.dataset.assistantId)));
@@ -391,26 +683,23 @@
       persist();
       renderAssistants();
     }));
-    $$('[data-tool-confirmation]').forEach((button) => button.addEventListener('click', () => {
-      const connection = state.toolConnections.find((x) => x.id === button.dataset.toolConfirmation);
-      if (!connection) return;
-      connection.requiresConfirmation = !connection.requiresConfirmation;
-      persist();
-      renderAssistants();
-      showToast(connection.requiresConfirmation ? 'MCP calls will require confirmation' : 'MCP calls may run without confirmation');
-    }));
   }
 
   function editAssistant(id) {
     const assistant = id ? state.assistants.find((x) => x.id === id) : null;
-    const draft = assistant || { id: makeId('assistant'), name: '', description: '', instructions: '', tools: [], permissions: {} };
-    const availableTools = state.toolConnections.flatMap((connection) => (connection.tools || []).map((tool) => ({ key: connection.id + '::' + tool.name, connection: connection.name, name: tool.name, description: tool.description || '' })));
+    const draft = assistant || { id: makeId('assistant'), name: '', description: '', instructions: '', tools: [], toolPolicies: {}, permissions: {} };
+    draft.toolPolicies ||= {};
+    const availableTools = state.toolConnections.flatMap((connection) => (connection.tools || []).map((tool) => ({ key: connection.id + '::' + tool.name, connection: connection.name, name: tool.name, description: tool.description || '', risk: toolRisk(tool) })));
     const knownKeys = new Set(availableTools.map((tool) => tool.key));
-    const toolChoices = availableTools.length ? availableTools.map((tool) =>
-      '<label class="mcp-assistant-choice"><input type="checkbox" data-assistant-mcp-tool value="' + escapeAttribute(tool.key) + '" ' + (draft.tools.includes(tool.key) ? 'checked' : '') + '><span><strong>' + escapeHtml(tool.name) + '</strong><small>' + escapeHtml(tool.connection + ' · ' + tool.description) + '</small></span></label>'
-    ).join('') : '<p class="settings-copy">Discover tools from an enabled MCP connection to allow them for this assistant.</p>';
+    const toolChoices = availableTools.length ? availableTools.map((tool) => {
+      const options = tool.risk === 'read-only'
+        ? [['ask', 'Ask for every action'], ['per-run', 'Approve once per run'], ['auto-read', 'Auto-allow read-only']]
+        : [['ask', 'Ask for every action · write/unknown']];
+      const selectedPolicy = options.some(([value]) => value === draft.toolPolicies[tool.key]) ? draft.toolPolicies[tool.key] : 'ask';
+      return '<div class="mcp-assistant-choice"><label><input type="checkbox" data-assistant-mcp-tool value="' + escapeAttribute(tool.key) + '" ' + (draft.tools.includes(tool.key) ? 'checked' : '') + '><span><strong>' + escapeHtml(tool.name) + '</strong><small>' + escapeHtml(tool.connection + ' · ' + tool.description + ' · ' + tool.risk) + '</small></span></label><select data-assistant-tool-policy="' + escapeAttribute(tool.key) + '" aria-label="Approval policy for ' + escapeAttribute(tool.name) + '">' + options.map(([value, label]) => '<option value="' + value + '" ' + (selectedPolicy === value ? 'selected' : '') + '>' + label + '</option>').join('') + '</select></div>';
+    }).join('') : '<p class="settings-copy">Discover tools from an enabled MCP connection to allow them for this assistant.</p>';
     openOverlay(assistant ? 'Edit assistant' : 'Create assistant', 'ASSISTANT',
-      '<div class="assistant-editor"><label>Name<input id="assistantName" maxlength="80" value="' + escapeAttribute(draft.name) + '"></label><label>Description<input id="assistantDescription" maxlength="200" value="' + escapeAttribute(draft.description) + '"></label><label>Instructions<textarea id="assistantInstructions" maxlength="12000">' + escapeHtml(draft.instructions) + '</textarea></label><label>Allowed MCP tool keys<textarea id="assistantTools" placeholder="Select below or enter connection-id::tool-name per line">' + escapeHtml(draft.tools.join(String.fromCharCode(10))) + '</textarea></label><div class="assistant-mcp-tools"><strong>Available tools</strong>' + toolChoices + '</div><div class="permission-grid"><label><input id="permRead" type="checkbox"> Read local files</label><label><input id="permWrite" type="checkbox"> Write / destructive tools</label><label><input id="permNetwork" type="checkbox"> Network tools</label></div><p class="settings-copy">MCP tools require Network permission plus an explicit allowlist. Tools marked read-only also require Read; destructive tools require Write. Calls ask for confirmation by default.</p><button class="canvas-save" id="saveAssistant" type="button">Save assistant</button></div>'
+      '<div class="assistant-editor"><label>Name<input id="assistantName" maxlength="80" value="' + escapeAttribute(draft.name) + '"></label><label>Description<input id="assistantDescription" maxlength="200" value="' + escapeAttribute(draft.description) + '"></label><label>Instructions<textarea id="assistantInstructions" maxlength="12000">' + escapeHtml(draft.instructions) + '</textarea></label><label>Allowed MCP tool keys<textarea id="assistantTools" placeholder="Select below or enter connection-id::tool-name per line">' + escapeHtml(draft.tools.join(String.fromCharCode(10))) + '</textarea></label><div class="assistant-mcp-tools"><strong>Available tools</strong>' + toolChoices + '</div><div class="permission-grid"><label><input id="permRead" type="checkbox"> Read-only tools</label><label><input id="permWrite" type="checkbox"> Write / destructive tools</label><label><input id="permNetwork" type="checkbox"> Network tools</label></div><p class="settings-copy">MCP tools require Network permission plus an explicit allowlist. Tools marked read-only also require Read; destructive tools require Write. Calls ask for confirmation by default.</p><button class="canvas-save" id="saveAssistant" type="button">Save assistant</button></div>'
     );
     byId('permRead').checked = Boolean(draft.permissions.read);
     byId('permWrite').checked = Boolean(draft.permissions.write);
@@ -426,7 +715,8 @@
       draft.name = name.slice(0, 80);
       draft.description = byId('assistantDescription').value.trim().slice(0, 200);
       draft.instructions = byId('assistantInstructions').value.slice(0, 12000);
-      draft.tools = byId('assistantTools').value.split(String.fromCharCode(10)).map((x) => x.trim()).filter(Boolean).slice(0, 50);
+      draft.tools = byId('assistantTools').value.split(String.fromCharCode(10)).map((x) => x.trim()).filter(Boolean).slice(0, 100);
+      draft.toolPolicies = Object.fromEntries($$('[data-assistant-tool-policy]').map((select) => [select.dataset.assistantToolPolicy, select.value]));
       draft.permissions = { read: byId('permRead').checked, write: byId('permWrite').checked, network: byId('permNetwork').checked };
       if (!assistant) state.assistants.push(draft);
       state.selectedAssistant = draft.id;
@@ -439,7 +729,33 @@
 
   let mcpRequestSequence = 0;
 
-  async function mcpRequest(connection, method, params = {}, id = undefined) {
+  async function readResponseTextLimited(response, maxBytes = 10 * 1024 * 1024) {
+    const advertised = Number(response.headers.get('content-length'));
+    if (Number.isFinite(advertised) && advertised > maxBytes) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error('Response exceeded the 10 MB safety limit');
+    }
+    if (!response.body) {
+      const text = await response.text();
+      if (new TextEncoder().encode(text).length > maxBytes) throw new Error('Response exceeded the 10 MB safety limit');
+      return text;
+    }
+    const reader = response.body.getReader(); const chunks = []; let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxBytes) { await reader.cancel().catch(() => {}); throw new Error('Response exceeded the 10 MB safety limit'); }
+        chunks.push(value);
+      }
+    } finally { reader.releaseLock(); }
+    const merged = new Uint8Array(total); let offset = 0;
+    chunks.forEach((chunk) => { merged.set(chunk, offset); offset += chunk.byteLength; });
+    return new TextDecoder().decode(merged);
+  }
+
+  async function mcpRequest(connection, method, params = {}, id = undefined, runControl = null) {
     const notification = method.startsWith('notifications/') || id === null;
     const requestId = notification ? undefined : (id ?? ++mcpRequestSequence);
     const payload = { jsonrpc: '2.0', method, params };
@@ -447,20 +763,34 @@
     const headers = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' };
     if (connection.sessionId) headers['Mcp-Session-Id'] = connection.sessionId;
     if (connection.protocolVersion) headers['MCP-Protocol-Version'] = connection.protocolVersion;
+    const signal = runControl?.controller.signal;
+    if (signal?.aborted) throw makeRunAbortError();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 30000);
+    const abortFromRun = () => {
+      controller.abort();
+      if (desktop?.abortRemoteRequest && bridgeRequestId) desktop.abortRemoteRequest(bridgeRequestId);
+    };
+    const bridgeRequestId = runControl ? runControl.id + ':mcp:' + (++runControl.requestSequence) : makeId('mcp-request');
+    if (signal) signal.addEventListener('abort', abortFromRun, { once: true });
     let response;
     try {
       if (desktop?.requestMcp) {
-        response = await desktop.requestMcp({ url: connection.endpoint, headers, body: JSON.stringify(payload) });
+        response = await desktop.requestMcp({ url: connection.endpoint, headers, body: JSON.stringify(payload), requestId: bridgeRequestId });
       } else {
         const fetched = await fetch(connection.endpoint, { method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal });
-        response = { ok: fetched.ok, status: fetched.status, text: await fetched.text(), contentType: fetched.headers.get('content-type') || '', mcpSessionId: fetched.headers.get('Mcp-Session-Id') || '' };
+        response = { ok: fetched.ok, status: fetched.status, text: await readResponseTextLimited(fetched), contentType: fetched.headers.get('content-type') || '', mcpSessionId: fetched.headers.get('Mcp-Session-Id') || '' };
       }
     } catch (error) {
-      if (error?.name === 'AbortError') throw new Error('MCP request timed out after 30 seconds');
+      if (signal?.aborted) throw makeRunAbortError();
+      if (error?.name === 'AbortError') throw new Error(timedOut ? 'MCP request timed out after 30 seconds' : 'MCP request was cancelled');
       throw new Error('Could not reach MCP server: ' + (error?.message || 'network or CORS error'));
-    } finally { clearTimeout(timeout); }
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abortFromRun);
+    }
+    if (signal?.aborted) throw makeRunAbortError();
     if (response.status === 404 && connection.sessionId) {
       connection.sessionId = '';
       throw new Error('MCP session expired; rediscover the server tools and retry');
@@ -515,31 +845,82 @@
     return formatted.length > 20000 ? formatted.slice(0, 20000) + '\n[Tool output truncated at 20,000 characters]' : formatted;
   }
 
-  async function executeMcpTool(connection, tool, argumentsValue, confirm = true) {
+  async function executeMcpTool(connection, tool, argumentsValue, options = {}) {
+    const { run = null, control = null, assistant = selectedAssistant(), provider = state.settings.provider, manual = false } = options;
     if (!connection.enabled) throw new Error('This MCP connection is disabled');
+    if (!assistantMayUseTool(assistant, connection, tool)) throw new Error('This tool is not allowed by the active assistant’s tool allowlist and permissions');
     if (!argumentsValue || typeof argumentsValue !== 'object' || Array.isArray(argumentsValue)) throw new Error('Tool arguments must be a JSON object');
     if (JSON.stringify(argumentsValue).length > 100000) throw new Error('Tool arguments exceeded the 100 KB safety limit');
-    if (confirm && connection.requiresConfirmation) {
-      const shownArgs = JSON.stringify(argumentsValue, null, 2).slice(0, 1800);
-      if (!window.confirm('Allow MCP tool “' + tool.name + '” on “' + connection.name + '”?\n\nArguments:\n' + shownArgs)) return { approved: false, text: 'The user declined this tool call.' };
+    const key = connection.id + '::' + tool.name;
+    const risk = toolRisk(tool);
+    const policy = manual ? 'ask' : toolApprovalMode(assistant, key, tool);
+    const needsApproval = risk !== 'read-only' || policy === 'ask' || (policy === 'per-run' && !control?.approvedTools.has(key)) || manual;
+    const providerDestination = providerUrlInfo(provider?.baseUrl).host;
+    const destination = run
+      ? 'Action runs at the MCP server; if approved, its result is sent to the model provider at ' + (providerDestination || 'the configured provider') + ' to continue this turn.'
+      : 'Action runs at the MCP server; this manual result is saved to the current thread locally and is not sent to a model by this call.';
+    if (run) {
+      recordRunEvent(run.id, { type: 'tool-proposed', message: 'Model requested an MCP action.', server: connection.name, endpoint: safeEndpointLabel(connection.endpoint), tool: tool.name, risk, destination, arguments: argumentsValue });
     }
-    const result = await mcpRequest(connection, 'tools/call', { name: tool.name, arguments: argumentsValue });
-    return { approved: true, result, text: formatMcpResult(result) };
+    if (needsApproval) {
+      if (run && control) await waitForRunCheckpoint(control);
+      if (run) setAgentRunStatus(run.id, 'waiting_approval');
+      const approved = await requestToolApproval({ run, connection, tool, argumentsValue, risk, destination });
+      if (!approved) {
+        if (run) recordRunEvent(run.id, { type: 'tool-denied', message: 'User declined this MCP action; the server was not called.', server: connection.name, endpoint: safeEndpointLabel(connection.endpoint), tool: tool.name, risk, destination, arguments: argumentsValue, approved: false });
+        return { approved: false, text: 'The user declined this tool call; it was not executed.' };
+      }
+      if (control && policy === 'per-run' && risk === 'read-only') control.approvedTools.add(key);
+      if (run) recordRunEvent(run.id, { type: 'tool-approved', message: 'User approved this action.', server: connection.name, endpoint: safeEndpointLabel(connection.endpoint), tool: tool.name, risk, destination, arguments: argumentsValue, approved: true });
+    } else if (run) {
+      recordRunEvent(run.id, { type: 'tool-auto-approved', message: 'Read-only action allowed by this assistant’s explicit auto-read policy.', server: connection.name, endpoint: safeEndpointLabel(connection.endpoint), tool: tool.name, risk, destination, arguments: argumentsValue, approved: true });
+    }
+    if (control) await waitForRunCheckpoint(control);
+    const startedAt = Date.now();
+    try {
+      const result = await mcpRequest(connection, 'tools/call', { name: tool.name, arguments: argumentsValue }, undefined, control);
+      const text = formatMcpResult(result);
+      if (run) recordRunEvent(run.id, { type: 'tool-completed', message: 'MCP action completed in ' + (Date.now() - startedAt) + ' ms.', server: connection.name, endpoint: safeEndpointLabel(connection.endpoint), tool: tool.name, risk, destination, arguments: argumentsValue, result: text });
+      return { approved: true, result, text };
+    } catch (error) {
+      if (control?.controller.signal.aborted) throw makeRunAbortError();
+      if (run) recordRunEvent(run.id, { type: 'tool-failed', message: 'MCP action failed: ' + error.message, server: connection.name, endpoint: safeEndpointLabel(connection.endpoint), tool: tool.name, risk, destination, arguments: argumentsValue, approved: true });
+      throw error;
+    }
   }
 
   async function callMcpTool(connection, tool) {
     if (!connection.enabled) { showToast('Enable this MCP connection first'); return; }
+    const assistant = selectedAssistant();
+    if (!assistantMayUseTool(assistant, connection, tool)) { showToast('Allow this tool and its required permissions for the active assistant first'); return; }
     const raw = window.prompt('Arguments for ' + tool.name + ' as JSON', '{}');
     if (raw === null) return;
     let argumentsValue;
     try { argumentsValue = JSON.parse(raw || '{}'); } catch (_) { showToast('Arguments must be valid JSON'); return; }
     const threadId = state.activeId;
     try {
-      const outcome = await executeMcpTool(connection, tool, argumentsValue);
+      const outcome = await executeMcpTool(connection, tool, argumentsValue, { assistant, manual: true });
       if (!outcome.approved) { showToast('MCP tool call cancelled'); return; }
       saveAssistantResponse(threadId, '**MCP result · ' + tool.name + '**\n\n' + outcome.text, 'MCP · ' + connection.name);
       showToast('MCP tool completed');
     } catch (error) { showToast('MCP call failed: ' + error.message); }
+  }
+
+  function toolRisk(tool) {
+    if (tool?.annotations?.readOnlyHint === true && tool?.annotations?.destructiveHint !== true) return 'read-only';
+    if (tool?.annotations?.destructiveHint === true) return 'destructive';
+    return 'write/unknown';
+  }
+
+  function toolApprovalMode(assistant, key, tool) {
+    const configured = assistant?.toolPolicies?.[key];
+    if (toolRisk(tool) !== 'read-only') return 'ask';
+    return ['ask', 'per-run', 'auto-read'].includes(configured) ? configured : 'ask';
+  }
+
+  function assistantMayUseTool(assistant, connection, tool) {
+    if (!assistant?.permissions?.network || !(assistant.tools || []).includes(connection.id + '::' + tool.name)) return false;
+    return toolRisk(tool) === 'read-only' ? Boolean(assistant.permissions.read) : Boolean(assistant.permissions.write);
   }
 
   function availableMcpTools(assistant = selectedAssistant()) {
@@ -551,8 +932,9 @@
       for (const tool of connection.tools || []) {
         const key = connection.id + '::' + tool.name;
         if (!allowed.has(key)) continue;
-        if (tool.annotations?.readOnlyHint && !assistant.permissions.read) continue;
-        if (tool.annotations?.destructiveHint && !assistant.permissions.write) continue;
+        const risk = toolRisk(tool);
+        if (risk === 'read-only' && !assistant.permissions.read) continue;
+        if (risk !== 'read-only' && !assistant.permissions.write) continue;
         let inputSchema = tool.inputSchema;
         if (!inputSchema || typeof inputSchema !== 'object' || Array.isArray(inputSchema)) inputSchema = { type: 'object', properties: {} };
         else {
@@ -561,7 +943,7 @@
           if (inputSchema.type !== 'object') inputSchema = { type: 'object', properties: {} };
         }
         const alias = 'forge_mcp_' + result.length;
-        result.push({ alias, key, connection, tool, definition: { type: 'function', function: { name: alias, description: (connection.name + ': ' + (tool.description || tool.name)).slice(0, 1000), parameters: inputSchema } } });
+        result.push({ alias, key, connection, tool, risk, approvalMode: toolApprovalMode(assistant, key, tool), definition: { type: 'function', function: { name: alias, description: (connection.name + ': ' + (tool.description || tool.name)).slice(0, 1000), parameters: inputSchema } } });
       }
     }
     return result;
@@ -578,7 +960,7 @@
       if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('Use an HTTP(S) URL without embedded credentials');
       if (parsed.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]', '::1'].includes(parsed.hostname)) throw new Error('Use HTTPS for remote MCP servers; HTTP is allowed only on loopback');
     } catch (error) { showToast('Invalid MCP endpoint: ' + error.message); return; }
-    state.toolConnections.push({ id: makeId('tool'), name: name.trim().slice(0, 100), type: 'MCP', endpoint: parsed.toString().slice(0, 500), enabled: false, requiresConfirmation: true, sessionId: '', protocolVersion: '', tools: [] });
+    state.toolConnections.push({ id: makeId('tool'), name: name.trim().slice(0, 100), type: 'MCP', endpoint: parsed.toString().slice(0, 500), enabled: false, sessionId: '', protocolVersion: '', tools: [] });
     persist(); renderAssistants(); showToast('MCP connection added and disabled');
   }
 
@@ -757,13 +1139,8 @@
     return Boolean(file?.type?.startsWith('text/')) || TEXT_EXTENSIONS.test(file?.name || '') || /json|javascript|xml|yaml/.test(file?.type || '');
   }
 
-  function readFileAsText(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(reader.error || new Error('Could not read file'));
-      reader.onload = () => resolve(String(reader.result || ''));
-      reader.readAsText(file);
-    });
+  async function readFileAsText(file, maxBytes = file.size) {
+    return file.slice(0, Math.max(0, maxBytes)).text();
   }
 
   function readFileAsDataUrl(file) {
@@ -780,8 +1157,8 @@
     const base = { name: file.name, type: file.type || 'application/octet-stream', size: file.size, content: '', preview: '', mediaKind, modelContext: '', truncated: false };
     if (isTextAttachment(file)) {
       if (file.size > MAX_TEXT_ATTACHMENT_BYTES) {
-        const text = await readFileAsText(file);
-        base.content = text.slice(0, MAX_TEXT_ATTACHMENT_BYTES);
+        const text = await readFileAsText(file, MAX_TEXT_ATTACHMENT_BYTES);
+        base.content = text;
         base.truncated = true;
       } else {
         base.content = await readFileAsText(file);
@@ -850,9 +1227,18 @@
     const thread = currentThread();
     const heading = $('.drawer-header h2', contextDrawer);
     if (heading) heading.textContent = thread.title;
-    const count = $('.project-card small', contextDrawer);
-    if (count) count.textContent = thread.attachments.length + ' attached files · Local workspace';
-    const attachedSection = $$('.drawer-section', contextDrawer)[0];
+    const scopedProject = thread.projectId ? state.projects.find((project) => project.id === thread.projectId) : null;
+    const projectName = byId('threadProjectName');
+    const projectMeta = byId('threadProjectMeta');
+    const projectSelect = byId('threadProjectSelect');
+    if (projectName) projectName.textContent = scopedProject?.name || 'No project selected';
+    if (projectMeta) projectMeta.textContent = scopedProject ? (scopedProject.memory ? 'Instructions and text files included in this thread’s scope' : 'Project memory is off; no project content is sent') : thread.attachments.length + ' attached files · no project context';
+    if (projectSelect) {
+      projectSelect.replaceChildren(new Option('No project context', ''));
+      state.projects.forEach((project) => projectSelect.add(new Option(project.name + (project.memory ? ' · memory on' : ' · memory off'), project.id)));
+      projectSelect.value = scopedProject?.id || '';
+    }
+    const attachedSection = $$('.drawer-section', contextDrawer).find((section) => $('.drawer-section-heading span', section)?.textContent.startsWith('Attached context'));
     if (attachedSection) {
       $$('.context-file', attachedSection).forEach((node) => node.remove());
       const heading = $('.drawer-section-heading', attachedSection);
@@ -965,11 +1351,14 @@
     overlay.setAttribute('aria-hidden', 'true');
   }
 
-  function buildProviderMessages(input, providerKind = state.settings.provider.kind, omitMessageIndex = null, thread = currentThread(), assistant = selectedAssistant()) {
-    const projectContext = state.projects.filter((project) => project.instructions).map((project) => 'Project instructions · ' + project.name + ':\n' + project.instructions).join('\n\n');
+  function buildProviderMessages(input, providerKind = state.settings.provider.kind, sourceMessageIndex = null, thread = currentThread(), assistant = selectedAssistant()) {
+    const project = thread?.projectId ? state.projects.find((candidate) => candidate.id === thread.projectId) : null;
+    const projectFiles = project?.memory ? (project.files || []).filter((file) => file.content).map((file) => '\n--- Project file · ' + file.name + ' (' + file.type + ') ---\n' + file.content.slice(0, 200000)).join('') : '';
+    const projectContext = project?.memory ? ['Project instructions · ' + project.name + ':\n' + project.instructions, projectFiles ? 'Selected project files:' + projectFiles : ''].filter(Boolean).join('\n\n') : '';
     const system = ['You are Forge, a careful local-first assistant.', state.settings.systemPrompt, assistant?.instructions || '', projectContext, contextForThread(thread)].filter(Boolean).join('\n\n');
-    const history = thread.messages.filter((_, index) => index !== omitMessageIndex).slice(-24);
-    if (history.at(-1)?.kind === 'user' && history.at(-1).content === input) history.pop();
+    const priorMessages = Number.isInteger(sourceMessageIndex) ? thread.messages.slice(0, Math.max(0, sourceMessageIndex)) : thread.messages;
+    const history = priorMessages.slice(-24);
+    if (!Number.isInteger(sourceMessageIndex) && history.at(-1)?.kind === 'user' && history.at(-1).content === input) history.pop();
     const messages = [{ role: 'system', content: system }, ...history.map((message) => ({ role: message.kind === 'assistant' ? 'assistant' : 'user', content: message.content }))];
     const images = (thread.attachments || []).filter((file) => file.preview && (file.mediaKind === 'image' || file.type.startsWith('image/'))).map((file) => file.preview);
     const userMessage = { role: 'user', content: input };
@@ -995,7 +1384,7 @@
     return url.toString();
   }
 
-  async function requestModel(messages, override = state.settings.provider, probe = false, onToken = null, tools = []) {
+  async function requestModel(messages, override = state.settings.provider, probe = false, onToken = null, tools = [], runControl = null) {
     const provider = { ...state.settings.provider, ...override };
     const url = providerRequestUrl(provider);
     const headers = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' };
@@ -1011,42 +1400,55 @@
       body.tools = tools;
       body.tool_choice = 'auto';
     }
+    const signal = runControl?.controller.signal;
+    if (signal?.aborted) throw makeRunAbortError();
     if (desktop?.requestProvider) {
-      let result;
-      try { result = await desktop.requestProvider({ url, body, apiKey: provider.apiKey || '' }); }
-      catch (error) { throw new Error('Desktop provider request failed: ' + (error?.message || 'network error')); }
-      if (!result.ok) throw new Error('Model HTTP ' + result.status + ' · ' + String(result.text || '').slice(0, 300));
-      let json;
-      try { json = JSON.parse(result.text); } catch (_) { throw new Error('Provider returned an unreadable JSON response'); }
-      const message = provider.kind === 'ollama' ? json.message : json.choices?.[0]?.message;
-      const content = typeof message?.content === 'string' ? message.content : '';
-      if (probe) {
-        if (!content.trim()) throw new Error(json.error?.message || 'Provider returned no assistant text');
-        return content;
-      }
-      const toolCalls = (message?.tool_calls || []).map((call, index) => {
-        const args = call.function?.arguments;
-        return { id: call.id || 'mcp-call-' + index, type: 'function', function: { name: call.function?.name || '', arguments: typeof args === 'string' ? args : JSON.stringify(args ?? {}) } };
-      });
-      if (content) onToken?.(content);
-      return { content, toolCalls };
+      const bridgeRequestId = runControl ? runControl.id + ':provider:' + (++runControl.requestSequence) : makeId('provider-request');
+      const abortFromRun = () => desktop?.abortRemoteRequest?.(bridgeRequestId);
+      if (signal) signal.addEventListener('abort', abortFromRun, { once: true });
+      try {
+        const result = await desktop.requestProvider({ url, body, apiKey: provider.apiKey || '', requestId: bridgeRequestId });
+        if (signal?.aborted) throw makeRunAbortError();
+        if (!result.ok) throw new Error('Model HTTP ' + result.status + ' · ' + String(result.text || '').slice(0, 300));
+        let json;
+        try { json = JSON.parse(result.text); } catch (_) { throw new Error('Provider returned an unreadable JSON response'); }
+        const message = provider.kind === 'ollama' ? json.message : json.choices?.[0]?.message;
+        const content = typeof message?.content === 'string' ? message.content : '';
+        if (probe) {
+          if (!content.trim()) throw new Error(json.error?.message || 'Provider returned no assistant text');
+          return content;
+        }
+        const toolCalls = (message?.tool_calls || []).map((call, index) => {
+          const args = call.function?.arguments;
+          return { id: call.id || 'mcp-call-' + index, type: 'function', function: { name: call.function?.name || '', arguments: typeof args === 'string' ? args : JSON.stringify(args ?? {}) } };
+        });
+        if (content) onToken?.(content);
+        return { content, toolCalls };
+      } catch (error) {
+        if (signal?.aborted) throw makeRunAbortError();
+        throw new Error('Desktop provider request failed: ' + (error?.message || 'network error'));
+      } finally { signal?.removeEventListener('abort', abortFromRun); }
     }
     const controller = new AbortController();
     const requestedTimeout = Number(provider.requestTimeoutMs);
     const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout >= 250
       ? Math.min(120000, Math.floor(requestedTimeout))
       : 120000;
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+    const abortFromRun = () => controller.abort();
+    if (signal) signal.addEventListener('abort', abortFromRun, { once: true });
     try {
       let response;
       try { response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal }); }
       catch (error) {
-        if (error?.name === 'AbortError') throw new Error('Provider request timed out after ' + Math.ceil(timeoutMs / 1000) + ' seconds');
+        if (signal?.aborted) throw makeRunAbortError();
+        if (error?.name === 'AbortError') throw new Error(timedOut ? 'Provider request timed out after ' + Math.ceil(timeoutMs / 1000) + ' seconds' : 'Provider request was cancelled');
         throw new Error('Could not reach provider. Check the URL, network, CORS, and API key (' + (error?.message || 'network error') + ')');
       }
-      if (!response.ok) throw new Error('Model HTTP ' + response.status + ' · ' + (await response.text()).slice(0, 300));
+      if (!response.ok) throw new Error('Model HTTP ' + response.status + ' · ' + (await readResponseTextLimited(response)).slice(0, 300));
       if (probe) {
-        const raw = await response.text();
+        const raw = await readResponseTextLimited(response);
         let result;
         try { result = JSON.parse(raw); } catch (_) { throw new Error('Provider returned an unreadable connection-test response'); }
         const text = provider.kind === 'ollama' ? result.message?.content : result.choices?.[0]?.message?.content;
@@ -1056,6 +1458,7 @@
       if (!response.body) throw new Error('Provider did not return a streaming response');
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let output = '';
       const toolCallMap = new Map();
+      let receivedBytes = 0;
       const mergeToolCall = (call, fallbackIndex = 0) => {
         const index = Number.isInteger(call.index) ? call.index : fallbackIndex;
         const current = toolCallMap.get(index) || { id: '', type: 'function', function: { name: '', arguments: '' } };
@@ -1094,28 +1497,39 @@
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        receivedBytes += value.byteLength;
+        if (receivedBytes > 10 * 1024 * 1024) { await reader.cancel().catch(() => {}); throw new Error('Provider response exceeded the 10 MB safety limit'); }
         consume(value);
       }
       if (buffer.trim()) consume(new Uint8Array(), true);
-      const toolCalls = [...toolCallMap.entries()].sort(([a], [b]) => a - b).map(([index, call]) => ({
-        ...call,
-        id: call.id || 'mcp-call-' + index,
-        function: { ...call.function, arguments: call.function.arguments || '{}' }
-      }));
+      const toolCalls = [...toolCallMap.entries()].sort(([a], [b]) => a - b).map(([index, call]) => ({ ...call, id: call.id || 'mcp-call-' + index, function: { ...call.function, arguments: call.function.arguments || '{}' } }));
       return { content: output, toolCalls };
     } catch (error) {
-      if (error?.name === 'AbortError') throw new Error('Provider request timed out after ' + Math.ceil(timeoutMs / 1000) + ' seconds');
+      if (signal?.aborted) throw makeRunAbortError();
+      if (error?.name === 'AbortError') throw new Error(timedOut ? 'Provider request timed out after ' + Math.ceil(timeoutMs / 1000) + ' seconds' : 'Provider request was cancelled');
       throw error;
-    } finally { clearTimeout(timeout); }
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abortFromRun);
+    }
   }
 
-  async function completeProviderTurn(messages, provider, assistant, onToken, onStatus) {
+  async function completeProviderTurn(messages, provider, assistant, onToken, onStatus, run = null, control = null) {
     const available = availableMcpTools(assistant);
     const byAlias = new Map(available.map((item) => [item.alias, item]));
     let totalCalls = 0;
+    const checkpoint = async () => { if (control) await waitForRunCheckpoint(control); };
     for (let round = 0; round < 6; round += 1) {
-      const result = await requestModel(messages, provider, false, onToken, available.map((item) => item.definition));
-      if (!result.toolCalls.length) return result.content || 'The provider returned an empty response.';
+      await checkpoint();
+      if (control) { control.activity = 'Requesting model response · round ' + (round + 1); renderAgentRunControls(); }
+      if (run) recordRunEvent(run.id, { type: 'model-request', message: 'Model request started · round ' + (round + 1) + '.', destination: run.provider });
+      const result = await requestModel(messages, provider, false, onToken, available.map((item) => item.definition), control);
+      await checkpoint();
+      if (!result.toolCalls.length) {
+        if (run) recordRunEvent(run.id, { type: 'model-response', message: 'Model returned a final response.', result: result.content || '[empty response]' });
+        return result.content || 'The provider returned an empty response.';
+      }
+      if (run) recordRunEvent(run.id, { type: 'tool-proposals', message: 'Model proposed ' + result.toolCalls.length + ' action(s); each will be checked against current permissions and approval policy.' });
       if (round === 5) return result.content || 'Stopped after the maximum number of MCP tool rounds.';
       const calls = result.toolCalls;
       const assistantCalls = calls.map((call) => {
@@ -1125,6 +1539,7 @@
       });
       messages.push({ role: 'assistant', content: result.content || (provider.kind === 'ollama' ? '' : null), tool_calls: assistantCalls });
       for (const call of calls) {
+        await checkpoint();
         const withinLimit = totalCalls < 8;
         if (withinLimit) totalCalls += 1;
         const entry = byAlias.get(call.function.name);
@@ -1133,16 +1548,22 @@
           toolText = 'Per-turn MCP tool-call limit reached (8 calls).';
         } else if (!entry) {
           toolText = 'This tool is not allowlisted for the active assistant.';
+          if (run) recordRunEvent(run.id, { type: 'tool-blocked', message: toolText + ' No server call was made.', tool: call.function.name });
         } else {
           let args;
           try { args = typeof call.function.arguments === 'string' ? JSON.parse(call.function.arguments || '{}') : call.function.arguments; }
           catch (_) { args = null; }
           try {
             if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Model supplied invalid JSON arguments');
-            onStatus?.((entry.connection.requiresConfirmation ? 'Waiting for approval: ' : 'Running tool: ') + entry.tool.name);
-            const outcome = await executeMcpTool(entry.connection, entry.tool, args);
+            onStatus?.((entry.approvalMode === 'auto-read' ? 'Auto-allowing read-only: ' : 'Reviewing action: ') + entry.tool.name);
+            if (control) { control.activity = (entry.approvalMode === 'auto-read' ? 'Read-only action · ' : 'Approval/action · ') + entry.tool.name; renderAgentRunControls(); }
+            const outcome = await executeMcpTool(entry.connection, entry.tool, args, { run, control, assistant, provider });
             toolText = outcome.text;
-          } catch (error) { toolText = 'Tool call failed: ' + error.message; }
+          } catch (error) {
+            if (control?.controller?.signal?.aborted) throw makeRunAbortError();
+            toolText = 'Tool call failed: ' + error.message;
+            if (run) recordRunEvent(run.id, { type: 'tool-failed', message: toolText, tool: entry.tool.name, server: entry.connection.name });
+          }
         }
         messages.push({ role: 'tool', tool_call_id: call.id, name: entry?.tool.name || call.function.name, content: toolText });
         onStatus?.('Tool result received · continuing');
@@ -1153,10 +1574,10 @@
 
   function saveAssistantResponse(threadId, content, label, replaceMessageIndex = null) {
     const thread = state.threads.find((candidate) => candidate.id === threadId);
-    if (!thread) return;
+    if (!thread) return false;
     const message = { kind: 'assistant', content: textValue(content), label: textValue(label, 'Forge Local') };
     if (Number.isInteger(replaceMessageIndex)) {
-      if (replaceMessageIndex < 0 || replaceMessageIndex >= thread.messages.length || thread.messages[replaceMessageIndex]?.kind !== 'assistant') return;
+      if (replaceMessageIndex < 0 || replaceMessageIndex >= thread.messages.length || thread.messages[replaceMessageIndex]?.kind !== 'assistant') return false;
       thread.messages[replaceMessageIndex] = message;
     } else {
       thread.messages.push(message);
@@ -1164,19 +1585,27 @@
     persist();
     if (state.activeId === threadId) renderThread(thread);
     notifyDesktop(message.label, message.content.slice(0, 180));
+    return true;
   }
 
-  async function simulateResponse(input, sourceMessageIndex = null, replaceMessageIndex = null, targetThreadId = state.activeId) {
+  let runStartPending = false;
+
+  async function simulateResponse(input, sourceMessageIndex = null, replaceMessageIndex = null, targetThreadId = state.activeId, options = {}) {
     const thread = state.threads.find((candidate) => candidate.id === targetThreadId);
     if (!thread) return;
+    if (activeRunControl || runStartPending || localResponsePending) { showToast('A response is active or starting. Wait for it to finish before starting another turn.'); return; }
+    runStartPending = true;
     const assistant = selectedAssistant();
-    await desktopReady;
+    try { await desktopReady; }
+    catch (error) { runStartPending = false; showToast('Desktop setup failed: ' + error.message); return; }
     const provider = { ...state.settings.provider };
     if (provider?.enabled) {
+      const { run, control } = createAgentRun(thread, input, assistant, replaceMessageIndex, options.retryOf || '', sourceMessageIndex);
+      runStartPending = false;
       const typing = document.createElement('div'); typing.className = 'message assistant'; typing.innerHTML = '<div class="message-avatar forge">✦</div><div class="message-column"><div class="message-body"><div class="message-label">' + escapeHtml(assistant?.name || 'Forge') + '</div><div class="streaming-response"><span class="typing-dots"><i></i><i></i><i></i></span></div></div></div>';
       if (state.activeId === targetThreadId) { conversation.appendChild(typing); conversation.scrollTop = conversation.scrollHeight; }
       try {
-        const messages = buildProviderMessages(input, provider.kind, replaceMessageIndex, thread, assistant);
+        const messages = buildProviderMessages(input, provider.kind, sourceMessageIndex, thread, assistant);
         const output = await completeProviderTurn(messages, provider, assistant, (text) => {
           const target = $('.streaming-response', typing);
           if (target) target.innerHTML = renderContent(text);
@@ -1184,17 +1613,30 @@
         }, (status) => {
           const target = $('.streaming-response', typing);
           if (target) target.textContent = status;
-        });
-        saveAssistantResponse(targetThreadId, output, assistant?.name || 'Forge Local', replaceMessageIndex);
-      } catch (error) { showToast('Model request failed: ' + error.message); }
-      finally { typing.remove(); }
+        }, run, control);
+        if (control.controller.signal.aborted) throw makeRunAbortError();
+        if (!saveAssistantResponse(targetThreadId, output, assistant?.name || 'Forge', replaceMessageIndex)) throw new Error('The originating thread or reply slot changed before the response could be saved');
+        recordRunEvent(run.id, { type: 'run-result', message: 'Assistant response saved to the originating thread.', result: output });
+        setAgentRunStatus(run.id, 'completed');
+      } catch (error) {
+        const cancelled = control.stopRequested || control.controller.signal.aborted || error?.name === 'AbortError';
+        const status = cancelled ? 'cancelled' : 'failed';
+        recordRunEvent(run.id, { type: status, message: cancelled ? 'Run stopped. No further actions will start; external effects already completed were not rolled back.' : 'Run failed: ' + (error?.message || 'unknown error') });
+        setAgentRunStatus(run.id, status);
+        if (!cancelled) showToast('Model request failed: ' + error.message);
+        else showToast('Agent run stopped; completed external actions were not rolled back');
+      } finally {
+        typing.remove();
+        if (activeRunControl === control) activeRunControl = null;
+        renderAgentRunControls();
+      }
       return;
     }
+    runStartPending = false;
     simulateLocalResponse(input, sourceMessageIndex, targetThreadId, replaceMessageIndex, assistant);
   }
 
   function simulateLocalResponse(input, sourceMessageIndex = null, targetThreadId = state.activeId, replaceMessageIndex = null, assistant = selectedAssistant()) {
-    clearTimeout(responseTimer);
     const thread = state.threads.find((candidate) => candidate.id === targetThreadId);
     if (!thread) return;
     const typing = document.createElement('div');
@@ -1202,14 +1644,19 @@
     typing.innerHTML = '<div class="message-avatar forge">✦</div><div class="message-column"><div class="message-body"><div class="message-label">' + escapeHtml(assistant?.name || 'Forge Local') + '</div><span class="typing-dots"><i></i><i></i><i></i></span></div></div>';
     if (state.activeId === targetThreadId) { conversation.appendChild(typing); conversation.scrollTop = conversation.scrollHeight; }
 
+    localResponsePending = true;
+    activeLocalTyping = typing;
     responseTimer = setTimeout(() => {
       typing.remove();
+      if (activeLocalTyping === typing) activeLocalTyping = null;
+      localResponsePending = false;
+      responseTimer = null;
       const targetThread = state.threads.find((candidate) => candidate.id === targetThreadId);
       if (!targetThread) return;
       const text = textValue(input);
       const lower = text.toLowerCase();
       const attachedContext = contextForThread(targetThread);
-      const project = state.projects[0];
+      const project = targetThread.projectId ? projectById(targetThread.projectId) : null;
       let response;
 
       if (lower.includes('code')) {
@@ -1231,6 +1678,7 @@
   }
 
   function sendMessage() {
+    if (activeRunControl || runStartPending || localResponsePending) { showToast('A response is active or starting. Wait for it to finish before sending another turn.'); return; }
     const text = promptBox.value.trim();
     if (!text) {
       showToast('Write a message to begin');
@@ -1247,7 +1695,7 @@
       renderThread(thread);
       promptBox.value = '';
       resizeComposer();
-      simulateResponse(text, thread.messages.length - 1);
+      simulateResponse(text, thread.messages.length - 1, null, thread.id);
       return;
     }
 
@@ -1261,7 +1709,7 @@
     addMessage('user', text);
     promptBox.value = '';
     resizeComposer();
-    simulateResponse(text);
+    simulateResponse(text, thread.messages.length - 1, null, thread.id);
   }
 
   function safeClipboardWrite(value, successMessage) {
@@ -1841,6 +2289,8 @@
   function startAgentWorker() { resumeAgentTasks(); setInterval(resumeAgentTasks, 15000); window.addEventListener('visibilitychange', () => { if (!document.hidden) resumeAgentTasks(); }); }
 
   function showWorkspace(kind) {
+    if (kind === 'Runs') { renderRunLog(); return; }
+
     if (kind === 'Projects') {
       const cards = state.projects.map((project) =>
         '<div class="workspace-card project-card-functional"><button class="project-open" data-project-id="' + escapeAttribute(project.id) + '" type="button">' +
@@ -1890,6 +2340,7 @@
         }
         if (!window.confirm('Delete this local project?')) return;
         state.projects = state.projects.filter((project) => project.id !== button.dataset.projectDelete);
+        state.threads.forEach((thread) => { if (thread.projectId === button.dataset.projectDelete) thread.projectId = ''; });
         persist();
         showWorkspace('Projects');
       }));
@@ -2032,7 +2483,6 @@
     state.threads.unshift(thread);
     persist();
     editingIndex = null;
-    clearTimeout(responseTimer);
     renderThread(thread);
     promptBox.value = '';
     resizeComposer();
@@ -2080,6 +2530,21 @@
 
   byId('settingsButton')?.addEventListener('click', renderSettings);
   byId('shareButton')?.addEventListener('click', openShareDialog);
+  byId('agentPauseButton')?.addEventListener('click', pauseOrResumeAgentRun);
+  byId('agentStopButton')?.addEventListener('click', stopAgentRun);
+  byId('agentRunLogButton')?.addEventListener('click', renderRunLog);
+  byId('approvalAllow')?.addEventListener('click', () => settleToolApproval(true));
+  byId('approvalDeny')?.addEventListener('click', () => settleToolApproval(false));
+  byId('approvalStopRun')?.addEventListener('click', stopAgentRun);
+  toolApprovalOverlay?.addEventListener('click', (event) => { if (event.target === toolApprovalOverlay) settleToolApproval(false); });
+  toolApprovalOverlay?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab') return;
+    const focusable = $$('button:not([hidden]):not(:disabled)', toolApprovalOverlay);
+    if (!focusable.length) return;
+    const first = focusable[0]; const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  });
   byId('voiceButton')?.addEventListener('click', toggleVoiceInput);
   byId('editAssistantContext')?.addEventListener('click', () => renderAssistants());
   byId('finishOnboarding')?.addEventListener('click', () => {
@@ -2104,6 +2569,13 @@
   });
   byId('contextToggle').addEventListener('click', () => toggleContext());
   byId('closeContext').addEventListener('click', () => toggleContext(false));
+  byId('threadProjectSelect')?.addEventListener('change', (event) => {
+    const thread = currentThread();
+    thread.projectId = event.target.value || '';
+    persist();
+    updateContextDrawer();
+    showToast(thread.projectId ? 'Project scope set for this thread only' : 'Project context removed from this thread');
+  });
   byId('addContext').addEventListener('click', async () => ingestAttachments(desktop?.openFiles ? await desktop.openFiles() : await chooseBrowserFiles()));
   byId('attachButton').addEventListener('click', async () => ingestAttachments(desktop?.openFiles ? await desktop.openFiles() : await chooseBrowserFiles()));
 
@@ -2153,6 +2625,10 @@
 
     const button = event.target.closest('[data-message-action]');
     if (!button) return;
+    if ((activeRunControl || localResponsePending) && ['edit', 'delete', 'regenerate'].includes(button.dataset.messageAction)) {
+      showToast('Finish or stop the active response before editing, deleting, or regenerating a message');
+      return;
+    }
     const index = Number(button.dataset.index);
     const thread = currentThread();
     const message = thread.messages[index];
@@ -2169,7 +2645,6 @@
     } else if (button.dataset.messageAction === 'delete') {
       thread.messages.splice(index, 1);
       editingIndex = null;
-      clearTimeout(responseTimer);
       persist();
       renderThread(thread);
       showToast('Message deleted');
@@ -2257,6 +2732,7 @@
       openCanvas();
     }
     if (event.key === 'Escape') {
+      if (pendingToolApproval) { event.preventDefault(); settleToolApproval(false); return; }
       closePalette();
       closeOverlay();
       setModelMenuOpen(false);
@@ -2269,7 +2745,6 @@
     if (!item) return;
     const thread = state.threads.find((candidate) => candidate.id === item.dataset.threadId);
     if (!thread) return;
-    clearTimeout(responseTimer);
     editingIndex = null;
     renderThread(thread);
     showToast('Thread restored locally');
@@ -2279,9 +2754,16 @@
     if (event.key !== storeKey || suppressStorageEvent || !event.newValue) return;
     try {
       const incoming = normalizeState(JSON.parse(event.newValue));
+      const liveRun = activeRunControl ? state.runs.find((run) => run.id === activeRunControl.id) : null;
+      const liveThread = liveRun ? state.threads.find((thread) => thread.id === liveRun.threadId) : null;
       state = incoming;
+      if (liveRun) {
+        state.runs = [liveRun, ...state.runs.filter((run) => run.id !== liveRun.id)].slice(0, 12);
+        if (liveThread && !state.threads.some((thread) => thread.id === liveThread.id)) state.threads.unshift(liveThread);
+      }
       renderThread(currentThread());
       updateModelButton();
+      renderAgentRunControls();
     } catch (_) {}
   });
 
@@ -2331,8 +2813,11 @@
   if (!state.settings.onboardingComplete) byId('onboardingOverlay')?.setAttribute('aria-hidden', 'false');
   updateModelButton();
   renderThread(currentThread());
+  renderAgentRunControls();
   resizeComposer();
   updateStorageIndicator();
+  desktopReady = hydrateDesktop().then(() => {
+    if (recoveredRunsOnLoad) persist();
+  });
   startAgentWorker();
-  desktopReady = hydrateDesktop();
 })();
