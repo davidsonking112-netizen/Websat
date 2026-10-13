@@ -486,6 +486,65 @@ test('Forge agent workflow completes, duplicates safely, exports a report, and h
 });
 
 
+test('chat composer launches a linked Agent Task and returns its result into the same conversation', async ({ page }) => {
+  const taskRequests = [];
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    if (body.stream === false) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: JSON.stringify({ steps: [
+        { title: 'Plan the requested work', kind: 'plan', dependsOn: [] },
+        { title: 'Write the requested result', kind: 'work', dependsOn: [0] },
+        { title: 'Review the result', kind: 'review', dependsOn: [1] }
+      ] }) } }] }) });
+    }
+    taskRequests.push(body);
+    return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'Result delivered through the chat-linked agent.' } }] }) });
+  });
+  await seedWorkspace(page, [{
+    ...blankThread('chat-agent-thread'),
+    projectId: 'selected-project',
+    messages: [
+      { kind: 'user', content: 'Earlier conversation context for this thread.', label: '' },
+      { kind: 'assistant', content: 'Earlier assistant response in this thread.', label: 'Forge Local' }
+    ]
+  }], {
+    settings: { systemPrompt: 'Global workspace instruction sentinel.', provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-chat-agent-test', model: 'mock-agent-model', enabled: true } },
+    projects: [
+      { id: 'selected-project', name: 'Selected scope', instructions: 'Selected project instruction sentinel.', memory: true, files: [] },
+      { id: 'unselected-project', name: 'Other scope', instructions: 'Unselected project secret sentinel.', memory: true, files: [] }
+    ]
+  });
+
+  await page.getByRole('button', { name: 'Agent task', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Agent task', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#modeHint')).toContainText('results stay in this thread');
+  await page.locator('#prompt').fill('Write a short greeting');
+  await page.getByRole('button', { name: 'Start multi-step agent task' }).click();
+
+  await expect(page.locator('#conversation').getByText('Write a short greeting', { exact: true })).toBeVisible();
+  await expect(page.locator('.linked-agent-task')).toBeVisible();
+  await expect(page.locator('.linked-agent-task')).toBeInViewport();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
+  expect(taskRequests.length).toBeGreaterThan(0);
+  const agentSystem = taskRequests[0].messages.find((message) => message.role === 'system')?.content || '';
+  expect(agentSystem).toContain('Global workspace instruction sentinel.');
+  expect(agentSystem).toContain('Selected project instruction sentinel.');
+  expect(agentSystem).not.toContain('Unselected project secret sentinel.');
+  expect(taskRequests[0].messages.some((message) => message.content === 'Earlier conversation context for this thread.')).toBe(true);
+  expect(taskRequests[0].messages.some((message) => message.content === 'Earlier assistant response in this thread.')).toBe(true);
+  await expect(page.locator('#conversation')).toContainText('Result delivered through the chat-linked agent.');
+  const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), storageKey);
+  expect(saved.agentTasks[0].threadId).toBe('chat-agent-thread');
+  const linked = saved.threads[0].messages.filter((message) => message.agentTaskId === saved.agentTasks[0].id);
+  expect(linked).toHaveLength(1);
+  expect(linked[0].content).toContain('Result delivered through the chat-linked agent.');
+  expect(saved.threads[0].messages.some((message) => message.kind === 'user' && message.content === 'Write a short greeting')).toBe(true);
+  await expect(page.locator('#toast')).not.toHaveClass(/show/);
+  await page.screenshot({ path: 'test-results/forge-chat-agent-task.png', fullPage: true });
+  await page.locator('.linked-agent-task').getByRole('button', { name: 'Open task details' }).click();
+  await expect(page.locator('#overlayTitle')).toHaveText('Agents');
+});
+
 test('Forge runs independent steps concurrently but waits for their dependencies', async ({ page }) => {
   let active = 0;
   let peak = 0;

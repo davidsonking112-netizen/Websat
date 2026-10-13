@@ -217,3 +217,16 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .run-event-body pre{max-height:160px;margin:5px 0 9px}
 .run-retry{margin-top:5px}
 @media(max-width:620px){.agent-run-banner{margin:8px 12px 0;align-items:flex-start;flex-direction:column}.agent-run-banner>div{justify-content:flex-start;width:100%}.mcp-assistant-choice{align-items:flex-start;flex-direction:column}.mcp-assistant-choice select{flex:auto;width:100%}.tool-approval-dialog{padding:16px}.tool-approval-meta>div{grid-template-columns:1fr;gap:4px}}
+
+
+/* Chat-native multi-step agent tasks */
+.mode-pill[aria-pressed="true"] { background: #eee8ff; color: #654bb2; }
+.linked-agent-task { margin: 8px 0 18px 44px; padding: 12px 14px; max-width: min(760px, calc(100% - 50px)); border: 1px solid var(--line); border-left: 3px solid var(--accent-deep); border-radius: 10px; background: color-mix(in srgb, var(--card) 90%, var(--accent) 10%); color: var(--ink-soft); }
+.linked-agent-task-head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+.linked-agent-task-head strong { font-size:11px; color:var(--ink); }
+.linked-agent-task-head small, .linked-agent-task p, .linked-agent-task li { color:var(--muted); font-size:10px; line-height:1.5; }
+.linked-agent-task ol { margin:8px 0; padding-left:18px; }
+.linked-agent-task-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:9px; }
+.linked-agent-task-actions button { border:1px solid var(--line); border-radius:7px; background:var(--card); color:var(--ink-soft); padding:6px 9px; font-size:10px; cursor:pointer; }
+.linked-agent-task-actions button:hover { border-color:var(--accent-deep); }
+@media(max-width:620px){ .composer-mode-row{flex-wrap:wrap}.mode-hint{width:100%;margin-left:0}.linked-agent-task{margin-left:0;max-width:100%} }
