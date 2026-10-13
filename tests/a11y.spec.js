@@ -488,9 +488,11 @@ test('Forge agent workflow completes, duplicates safely, exports a report, and h
 
 test('chat composer launches a linked Agent Task and returns its result into the same conversation', async ({ page }) => {
   const taskRequests = [];
+  const plannerRequests = [];
   await page.route('https://provider.test/v1/chat/completions', async (route) => {
     const body = JSON.parse(route.request().postData() || '{}');
     if (body.stream === false) {
+      plannerRequests.push(body);
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: JSON.stringify({ steps: [
         { title: 'Plan the requested work', kind: 'plan', dependsOn: [] },
         { title: 'Write the requested result', kind: 'work', dependsOn: [0] },
@@ -508,7 +510,7 @@ test('chat composer launches a linked Agent Task and returns its result into the
       { kind: 'assistant', content: 'Earlier assistant response in this thread.', label: 'Forge Local' }
     ]
   }], {
-    settings: { systemPrompt: 'Global workspace instruction sentinel.', provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-chat-agent-test', model: 'mock-agent-model', enabled: true } },
+    settings: { systemPrompt: 'Global workspace instruction sentinel.', reasoningLevel: 'medium', provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-chat-agent-test', model: 'mock-agent-model', enabled: true } },
     projects: [
       { id: 'selected-project', name: 'Selected scope', instructions: 'Selected project instruction sentinel.', memory: true, files: [] },
       { id: 'unselected-project', name: 'Other scope', instructions: 'Unselected project secret sentinel.', memory: true, files: [] }
@@ -517,6 +519,7 @@ test('chat composer launches a linked Agent Task and returns its result into the
 
   await page.getByRole('button', { name: 'Agent task', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Agent task', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#reasoningLevel')).toHaveValue('medium');
   await expect(page.locator('#modeHint')).toContainText('results stay in this thread');
   await page.locator('#prompt').fill('Write a short greeting');
   await page.getByRole('button', { name: 'Start multi-step agent task' }).click();
@@ -525,24 +528,109 @@ test('chat composer launches a linked Agent Task and returns its result into the
   await expect(page.locator('.linked-agent-task')).toBeVisible();
   await expect(page.locator('.linked-agent-task')).toBeInViewport();
   await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
+  expect(plannerRequests.length).toBeGreaterThan(0);
+  const plannerSystem = plannerRequests[0].messages.find((message) => message.role === 'system')?.content || '';
+  expect(plannerSystem).toContain('Global workspace instruction sentinel.');
+  expect(plannerSystem).toContain('Selected project instruction sentinel.');
+  expect(plannerSystem).not.toContain('Unselected project secret sentinel.');
+  expect(plannerSystem).toContain('Requested reasoning level (medium) for agent task planning');
   expect(taskRequests.length).toBeGreaterThan(0);
   const agentSystem = taskRequests[0].messages.find((message) => message.role === 'system')?.content || '';
   expect(agentSystem).toContain('Global workspace instruction sentinel.');
   expect(agentSystem).toContain('Selected project instruction sentinel.');
   expect(agentSystem).not.toContain('Unselected project secret sentinel.');
+  expect(agentSystem).toContain('Requested reasoning level (medium) for agent task step');
   expect(taskRequests[0].messages.some((message) => message.content === 'Earlier conversation context for this thread.')).toBe(true);
   expect(taskRequests[0].messages.some((message) => message.content === 'Earlier assistant response in this thread.')).toBe(true);
   await expect(page.locator('#conversation')).toContainText('Result delivered through the chat-linked agent.');
   const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), storageKey);
   expect(saved.agentTasks[0].threadId).toBe('chat-agent-thread');
+  expect(saved.agentTasks[0].reasoningLevel).toBe('medium');
   const linked = saved.threads[0].messages.filter((message) => message.agentTaskId === saved.agentTasks[0].id);
   expect(linked).toHaveLength(1);
   expect(linked[0].content).toContain('Result delivered through the chat-linked agent.');
   expect(saved.threads[0].messages.some((message) => message.kind === 'user' && message.content === 'Write a short greeting')).toBe(true);
   await expect(page.locator('#toast')).not.toHaveClass(/show/);
-  await page.screenshot({ path: 'test-results/forge-chat-agent-task.png', fullPage: true });
+  await page.screenshot({ path: 'test-results/forge-chat-agent-task-reasoning.png', fullPage: true });
   await page.locator('.linked-agent-task').getByRole('button', { name: 'Open task details' }).click();
   await expect(page.locator('#overlayTitle')).toHaveText('Agents');
+});
+
+test('ordinary Chat applies the selected reasoning guidance and audits the preference without forcing agent mode', async ({ page }) => {
+  let observedBody;
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    observedBody = JSON.parse(route.request().postData() || '{}');
+    return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'A concise conclusion with the key rationale.' } }] }) });
+  });
+  await seedWorkspace(page, [blankThread('chat-reasoning')], {
+    settings: { onboardingComplete: true, provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-reasoning-test', model: 'mock-chat-model', enabled: true } }
+  });
+  await expect(page.getByRole('button', { name: 'Chat', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.locator('#reasoningLevel').selectOption('high');
+  await page.locator('#prompt').fill('Compare these two options carefully.');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+
+  await expect(page.locator('#conversation')).toContainText('A concise conclusion with the key rationale.');
+  expect(observedBody.messages[0].content).toContain('Requested reasoning level (high) for chat response');
+  expect(observedBody.reasoning).toBeUndefined();
+  expect(observedBody.reasoning_effort).toBeUndefined();
+  const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), storageKey);
+  expect(saved.settings.reasoningLevel).toBe('high');
+  expect(saved.runs[0].reasoningLevel).toBe('high');
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: 'test-results/forge-chat-reasoning.png', fullPage: true });
+});
+
+test('reasoning and plan-review controls remain accessible without horizontal overflow on mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await seedWorkspace(page, [blankThread('mobile-reasoning')]);
+  await expect(page.getByLabel('Reasoning')).toBeVisible();
+  await expect(page.locator('#reviewPlanControl')).toBeHidden();
+  await page.getByRole('button', { name: 'Agent task', exact: true }).click();
+  await expect(page.getByLabel('Review plan first')).toBeVisible();
+  const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+  expect(overflows).toBe(false);
+});
+
+test('Agent Task can save its plan for user review before any execution request starts', async ({ page }) => {
+  let streamedSteps = 0;
+  await page.route('https://provider.test/v1/chat/completions', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    if (body.stream === false) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: JSON.stringify({ steps: [
+        { title: 'Plan the short draft', kind: 'plan', dependsOn: [] },
+        { title: 'Write the draft', kind: 'work', dependsOn: [0] },
+        { title: 'Review the draft', kind: 'review', dependsOn: [1] }
+      ] }) } }] }) });
+    }
+    streamedSteps += 1;
+    return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse({ choices: [{ delta: { content: 'The requested draft.' } }] }) });
+  });
+  await seedWorkspace(page, [blankThread('review-plan-thread')], {
+    settings: { reasoningLevel: 'high', provider: { kind: 'openai', baseUrl: 'https://provider.test/v1', apiKey: 'sk-review-plan-test', model: 'mock-agent-model', enabled: true } }
+  });
+
+  await page.getByRole('button', { name: 'Agent task', exact: true }).click();
+  await expect(page.locator('#reviewPlanControl')).toBeVisible();
+  await page.getByLabel('Review plan first').check();
+  await expect(page.locator('#modeHint')).toContainText('high may use more tokens');
+  await page.locator('#prompt').fill('Draft a short welcome note');
+  await page.getByRole('button', { name: 'Start multi-step agent task' }).click();
+
+  await expect(page.locator('.linked-agent-task')).toBeInViewport();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey)).toBe('needs_review');
+  expect(streamedSteps).toBe(0);
+  await expect(page.locator('.linked-agent-task')).toContainText('Plan the short draft');
+  await expect(page.locator('.linked-agent-task')).toContainText('Run / resume');
+  await expect(page.locator('#toast')).not.toHaveClass(/show/);
+  await page.screenshot({ path: 'test-results/forge-agent-plan-review.png', fullPage: true });
+
+  await page.locator('.linked-agent-task').getByRole('button', { name: 'Run / resume' }).click();
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).agentTasks?.[0]?.status, storageKey), { timeout: 15000 }).toBe('completed');
+  expect(streamedSteps).toBeGreaterThan(0);
+  const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), storageKey);
+  expect(saved.agentTasks[0].reasoningLevel).toBe('high');
+  expect(saved.agentTasks[0].steps.some((step) => step.compute?.reasoningLevel === 'high')).toBe(true);
 });
 
 test('Forge runs independent steps concurrently but waits for their dependencies', async ({ page }) => {

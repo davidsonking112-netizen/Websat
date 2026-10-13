@@ -199,7 +199,7 @@ describe('Websat production smoke checks', () => {
   test('agent runtime uses model planning, carries prior results, and records bounded resumable runs', () => {
     const js = read('app.js');
     const css = read('styles.css');
-    expect(js).toContain('async function planAgentSteps(prompt)');
+    expect(js).toContain("async function planAgentSteps(prompt, reasoningLevel = 'auto', threadId = '')");
     expect(js).toContain("source: 'local fallback'");
     expect(js).toContain('function agentLog(task, level, message, stepId =');
     expect(js).toContain('Completed prerequisite/results (may be empty)');
@@ -223,9 +223,15 @@ describe('Websat production smoke checks', () => {
     expect(js).toContain('function agentComputeProfile(task, step)');
     expect(js).toContain('needs_more_compute');
     expect(js).toContain('provider.maxTokens');
-    expect(js).toContain('step.compute = { initialTokens: profile.initialTokens');
+    expect(js).toContain('step.compute = { reasoningLevel: profile.reasoningLevel');
     expect(js).toContain('Pause reached after the in-flight request; this step remains resumable.');
     expect(js).toContain('Adaptive compute: ');
+    expect(js).toContain("const REASONING_LEVELS = new Set(['auto', 'low', 'medium', 'high'])");
+    expect(js).toContain("if (reasoningLevel === 'low')");
+    expect(js).toContain("else if (reasoningLevel === 'high')");
+    expect(js).toContain('Plan saved for review · no task step has run yet.');
+    expect(js).toContain("status: startImmediately ? 'queued' : 'needs_review'");
+    expect(js).toContain("task.status === 'needs_review'");
     expect(html).toContain('Agents');
     expect(js).toContain('function exportAgentTaskReport(task)');
     expect(js).toContain('schemaVersion: 1');
